@@ -21,6 +21,13 @@ import (
 
 const (
 	CustomMessageHistorySize = 15
+
+	// ComponentAttribute is the Agent attribute naming the component the Agent
+	// belongs to, such as the service or collector it runs for.
+	ComponentAttribute = "component"
+	// StackAttribute is the Agent attribute naming the stack (environment,
+	// deployment, ...) the Agent runs in.
+	StackAttribute = "stack"
 )
 
 // Agent represents a connected Agent.
@@ -104,6 +111,18 @@ func (agent *Agent) ServiceName() string {
 
 func (agent *Agent) ServiceVersion() string {
 	return valueOrPlaceholder(agent.displayAttribute("service.version"))
+}
+
+// Component is the component this Agent belongs to, as reported by the Agent.
+// Together with Stack it decides which config file in the store applies to the
+// Agent. It is empty when the Agent does not report the attribute.
+func (agent *Agent) Component() string {
+	return agent.displayAttribute(ComponentAttribute)
+}
+
+// Stack is the stack this Agent runs in, as reported by the Agent. See Component.
+func (agent *Agent) Stack() string {
+	return agent.displayAttribute(StackAttribute)
 }
 
 func (agent *Agent) HealthStatus() string {
@@ -487,10 +506,9 @@ func (agent *Agent) loadConfigFromStore() {
 		return
 	}
 
-	instanceId := agent.InstanceIdStr
-	serviceName := agent.displayAttribute("service.name")
+	component, stack := agent.Component(), agent.Stack()
 
-	key, body, found := agent.configStore.Resolve(instanceId, serviceName)
+	key, body, found := agent.configStore.Resolve(component, stack)
 	if !found {
 		// The store holds no config for this Agent. Keep the config the Agent
 		// currently has: handing out an empty config would wipe the Agent's
@@ -499,7 +517,7 @@ func (agent *Agent) loadConfigFromStore() {
 		//
 		// Still remember where a config for this Agent would belong, so that the
 		// UI can offer to create it.
-		agent.ConfigKey = agent.configStore.DefaultKeyFor(instanceId, serviceName)
+		agent.ConfigKey = agent.configStore.DefaultKeyFor(component, stack)
 		return
 	}
 
@@ -530,7 +548,7 @@ func (agent *Agent) storeConfigKey() string {
 		return ""
 	}
 
-	return agent.configStore.DefaultKeyFor(agent.InstanceIdStr, agent.displayAttribute("service.name"))
+	return agent.configStore.DefaultKeyFor(agent.Component(), agent.Stack())
 }
 
 // sendConfigIfChanged recalculates the remote config of the Agent and sends it

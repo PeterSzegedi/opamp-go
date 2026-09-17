@@ -1,7 +1,11 @@
-# Default config handed to every Agent that has no more specific config file in
-# the bucket. Uploaded to s3://opamp-configs/otel-configs/default.yaml by the
+# Fallback config, handed to every Agent that has no config file of its own in
+# the bucket. Uploaded to s3://opamp-configs/otel-collector/config.yaml by the
 # docker compose stack, and from there on owned by the bucket: edit it in the
 # admin UI, with `mc`/`aws s3 cp`, or from a pipeline.
+#
+# A config for one component in one stack goes to
+# s3://opamp-configs/otel-collector/<component>/<stack>/config.yaml and wins over
+# this file.
 #
 # The example Agent merges what it receives on top of its own local config, so
 # this file only needs to carry the settings that should be overridden.

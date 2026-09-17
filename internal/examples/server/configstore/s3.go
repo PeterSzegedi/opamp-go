@@ -24,8 +24,8 @@ const DefaultContentType = "application/yaml"
 type S3Settings struct {
 	// Bucket holding the config files. Required.
 	Bucket string
-	// Prefix is the "folder" inside the bucket that the config files live in.
-	// Keys handled by the Store are relative to it.
+	// Prefix is the key inside the bucket that the config files live under.
+	// Keys handled by the Store are relative to it. Defaults to DefaultPrefix.
 	Prefix string
 	// Region of the bucket. When empty the region is taken from the usual AWS
 	// configuration sources (AWS_REGION, shared config, instance metadata).
@@ -49,7 +49,7 @@ type S3Settings struct {
 // The objects are written verbatim, with no wrapping or encoding, so that a
 // config can be inspected and edited with any S3 client:
 //
-//	aws s3 cp s3://my-bucket/otel-configs/default.yaml -
+//	aws s3 cp s3://my-bucket/otel-collector/my-component/my-stack/config.yaml -
 //
 // Bucket versioning is recommended: it gives a full history of every config
 // change and makes rollbacks a bucket operation rather than a code change.
@@ -103,6 +103,11 @@ func NewS3BackendWithClient(client *s3.Client, settings S3Settings) *S3Backend {
 	}
 
 	prefix := strings.Trim(settings.Prefix, "/")
+	if prefix == "" {
+		// Never scatter config files over the root of the bucket: the bucket may
+		// well hold other things.
+		prefix = DefaultPrefix
+	}
 
 	location := (&url.URL{Scheme: "s3", Host: settings.Bucket, Path: "/" + prefix}).String()
 
@@ -122,9 +127,9 @@ func (b *S3Backend) Location() string {
 // List implements Backend. Objects that are not config files (folder markers,
 // checksums, docs, ...) are ignored.
 func (b *S3Backend) List(ctx context.Context) ([]ObjectInfo, error) {
-	input := &s3.ListObjectsV2Input{Bucket: aws.String(b.settings.Bucket)}
-	if b.prefix != "" {
-		input.Prefix = aws.String(b.prefix + "/")
+	input := &s3.ListObjectsV2Input{
+		Bucket: aws.String(b.settings.Bucket),
+		Prefix: aws.String(b.prefix + "/"),
 	}
 
 	var infos []ObjectInfo
@@ -218,23 +223,15 @@ func (b *S3Backend) Put(ctx context.Context, key string, body []byte) (Config, e
 
 // objectKey maps a store key to the full S3 object key.
 func (b *S3Backend) objectKey(key string) string {
-	if b.prefix == "" {
-		return key
-	}
-
 	return path.Join(b.prefix, key)
 }
 
 // storeKey maps a full S3 object key back to a store key. It returns false for
 // objects outside of the prefix and for folder markers.
 func (b *S3Backend) storeKey(objectKey string) (string, bool) {
-	key := objectKey
-	if b.prefix != "" {
-		trimmed, ok := strings.CutPrefix(objectKey, b.prefix+"/")
-		if !ok {
-			return "", false
-		}
-		key = trimmed
+	key, ok := strings.CutPrefix(objectKey, b.prefix+"/")
+	if !ok {
+		return "", false
 	}
 
 	if key == "" || strings.HasSuffix(key, "/") {

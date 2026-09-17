@@ -40,8 +40,8 @@ func main() {
 	var s3 s3Flags
 	flag.StringVar(&s3.bucket, "s3-bucket", envOr("OPAMP_S3_BUCKET", ""),
 		"S3 bucket holding the agent config files. When empty, configs are kept in memory only and are lost on restart.")
-	flag.StringVar(&s3.prefix, "s3-prefix", envOr("OPAMP_S3_PREFIX", "otel-configs"),
-		"Prefix (folder) inside the S3 bucket that the config files live under.")
+	flag.StringVar(&s3.prefix, "s3-prefix", envOr("OPAMP_S3_PREFIX", configstore.DefaultPrefix),
+		"Key inside the S3 bucket that the config files live under.")
 	flag.StringVar(&s3.region, "s3-region", envOr("OPAMP_S3_REGION", ""),
 		"Region of the S3 bucket. Defaults to the region from the usual AWS configuration sources.")
 	flag.StringVar(&s3.endpoint, "s3-endpoint", envOr("OPAMP_S3_ENDPOINT", ""),

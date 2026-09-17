@@ -91,8 +91,9 @@ func newTestStore(t *testing.T, backend configstore.Backend) *configstore.Store 
 }
 
 // connectAgent registers an Agent and reports its first status, which is what
-// triggers the initial config lookup in the store.
-func connectAgent(t *testing.T, agents *Agents, conn *recordingConnection, serviceName string) (*Agent, *protobufs.ServerToAgent) {
+// triggers the initial config lookup in the store. The component and stack
+// attributes are what the Agent's config is resolved by.
+func connectAgent(t *testing.T, agents *Agents, conn *recordingConnection, component, stack string) (*Agent, *protobufs.ServerToAgent) {
 	t.Helper()
 
 	instanceId := InstanceId(uuid.New())
@@ -105,8 +106,12 @@ func connectAgent(t *testing.T, agents *Agents, conn *recordingConnection, servi
 		AgentDescription: &protobufs.AgentDescription{
 			IdentifyingAttributes: []*protobufs.KeyValue{
 				{
-					Key:   "service.name",
-					Value: &protobufs.AnyValue{Value: &protobufs.AnyValue_StringValue{StringValue: serviceName}},
+					Key:   ComponentAttribute,
+					Value: &protobufs.AnyValue{Value: &protobufs.AnyValue_StringValue{StringValue: component}},
+				},
+				{
+					Key:   StackAttribute,
+					Value: &protobufs.AnyValue{Value: &protobufs.AnyValue_StringValue{StringValue: stack}},
 				},
 			},
 		},
@@ -118,35 +123,64 @@ func connectAgent(t *testing.T, agents *Agents, conn *recordingConnection, servi
 func TestAgentIsConfiguredFromTheStoreOnConnect(t *testing.T) {
 	ctx := context.Background()
 	backend := configstore.NewMemoryBackend()
-	_, err := backend.Put(ctx, configstore.DefaultKey, []byte("default config"))
+	_, err := backend.Put(ctx, configstore.ConfigFile, []byte("fallback config"))
 	require.NoError(t, err)
-	_, err = backend.Put(ctx, "services/billing.yaml", []byte("billing config"))
+	_, err = backend.Put(ctx, "billing/prod/config.yaml", []byte("billing prod config"))
 	require.NoError(t, err)
 
 	agents := newTestAgents()
 	agents.SetConfigStore(newTestStore(t, backend))
 
-	billing, response := connectAgent(t, agents, newRecordingConnection(), "billing")
+	billing, response := connectAgent(t, agents, newRecordingConnection(), "billing", "prod")
 	require.NotNil(t, response.RemoteConfig)
-	assert.Equal(t, "billing config", string(response.RemoteConfig.Config.ConfigMap[""].Body))
-	assert.Equal(t, "services/billing.yaml", billing.CloneReadonly().ConfigKey)
+	assert.Equal(t, "billing prod config", string(response.RemoteConfig.Config.ConfigMap[""].Body))
+	assert.Equal(t, "billing/prod/config.yaml", billing.CloneReadonly().ConfigKey)
 
-	// An agent of another service gets the default config.
-	shipping, response := connectAgent(t, agents, newRecordingConnection(), "shipping")
+	// An agent of another component gets the fallback config.
+	shipping, response := connectAgent(t, agents, newRecordingConnection(), "shipping", "prod")
 	require.NotNil(t, response.RemoteConfig)
-	assert.Equal(t, "default config", string(response.RemoteConfig.Config.ConfigMap[""].Body))
-	assert.Equal(t, configstore.DefaultKey, shipping.CloneReadonly().ConfigKey)
+	assert.Equal(t, "fallback config", string(response.RemoteConfig.Config.ConfigMap[""].Body))
+	assert.Equal(t, configstore.ConfigFile, shipping.CloneReadonly().ConfigKey)
+
+	// So does the same component in another stack.
+	staging, response := connectAgent(t, agents, newRecordingConnection(), "billing", "staging")
+	require.NotNil(t, response.RemoteConfig)
+	assert.Equal(t, "fallback config", string(response.RemoteConfig.Config.ConfigMap[""].Body))
+	assert.Equal(t, configstore.ConfigFile, staging.CloneReadonly().ConfigKey)
+}
+
+// Every instance of a component in a stack shares one config file: instances and
+// hosts are not addressable on their own.
+func TestAllInstancesOfAComponentInAStackShareTheConfig(t *testing.T) {
+	ctx := context.Background()
+	backend := configstore.NewMemoryBackend()
+	_, err := backend.Put(ctx, "billing/prod/config.yaml", []byte("v1"))
+	require.NoError(t, err)
+
+	agents := newTestAgents()
+	agents.SetConfigStore(newTestStore(t, backend))
+
+	firstConn, secondConn := newRecordingConnection(), newRecordingConnection()
+	first, _ := connectAgent(t, agents, firstConn, "billing", "prod")
+	second, _ := connectAgent(t, agents, secondConn, "billing", "prod")
+
+	assert.Equal(t, first.CloneReadonly().ConfigKey, second.CloneReadonly().ConfigKey)
+
+	require.NoError(t, agents.SaveConfigForAgent(ctx, first.InstanceId, "", []byte("v2"), nil))
+
+	assert.Equal(t, "v2", firstConn.awaitRemoteConfig(t))
+	assert.Equal(t, "v2", secondConn.awaitRemoteConfig(t))
 }
 
 func TestAgentWithoutConfigInTheStoreGetsAKeyToCreate(t *testing.T) {
 	agents := newTestAgents()
 	agents.SetConfigStore(newTestStore(t, configstore.NewMemoryBackend()))
 
-	agent, response := connectAgent(t, agents, newRecordingConnection(), "billing")
+	agent, response := connectAgent(t, agents, newRecordingConnection(), "billing", "prod")
 
 	clone := agent.CloneReadonly()
 	assert.Empty(t, clone.CustomInstanceConfig)
-	assert.Equal(t, "instances/"+clone.InstanceIdStr+".yaml", clone.ConfigKey,
+	assert.Equal(t, "billing/prod/config.yaml", clone.ConfigKey,
 		"the UI must know where a config for this agent would belong")
 	assert.NotNil(t, response.RemoteConfig, "the agent is still offered the (empty) config it resolves to")
 }
@@ -154,20 +188,20 @@ func TestAgentWithoutConfigInTheStoreGetsAKeyToCreate(t *testing.T) {
 func TestSaveConfigForAgentStoresBeforeSending(t *testing.T) {
 	ctx := context.Background()
 	backend := configstore.NewMemoryBackend()
-	_, err := backend.Put(ctx, configstore.DefaultKey, []byte("v1"))
+	_, err := backend.Put(ctx, configstore.ConfigFile, []byte("v1"))
 	require.NoError(t, err)
 
 	agents := newTestAgents()
 	agents.SetConfigStore(newTestStore(t, backend))
 
 	conn := newRecordingConnection()
-	agent, _ := connectAgent(t, agents, conn, "billing")
+	agent, _ := connectAgent(t, agents, conn, "billing", "prod")
 
 	notify := make(chan struct{}, 1)
-	require.NoError(t, agents.SaveConfigForAgent(ctx, agent.InstanceId, configstore.DefaultKey, []byte("v2"), notify))
+	require.NoError(t, agents.SaveConfigForAgent(ctx, agent.InstanceId, configstore.ConfigFile, []byte("v2"), notify))
 
 	// The config must be in the store...
-	stored, err := backend.Get(ctx, configstore.DefaultKey)
+	stored, err := backend.Get(ctx, configstore.ConfigFile)
 	require.NoError(t, err)
 	assert.Equal(t, "v2", string(stored.Body))
 
@@ -178,17 +212,17 @@ func TestSaveConfigForAgentStoresBeforeSending(t *testing.T) {
 func TestSaveConfigForAgentAppliesToEveryAgentThatResolvesToTheKey(t *testing.T) {
 	ctx := context.Background()
 	backend := configstore.NewMemoryBackend()
-	_, err := backend.Put(ctx, configstore.DefaultKey, []byte("v1"))
+	_, err := backend.Put(ctx, configstore.ConfigFile, []byte("v1"))
 	require.NoError(t, err)
 
 	agents := newTestAgents()
 	agents.SetConfigStore(newTestStore(t, backend))
 
 	firstConn, secondConn := newRecordingConnection(), newRecordingConnection()
-	agent, _ := connectAgent(t, agents, firstConn, "billing")
-	connectAgent(t, agents, secondConn, "shipping")
+	agent, _ := connectAgent(t, agents, firstConn, "billing", "prod")
+	connectAgent(t, agents, secondConn, "shipping", "staging")
 
-	require.NoError(t, agents.SaveConfigForAgent(ctx, agent.InstanceId, configstore.DefaultKey, []byte("v2"), nil))
+	require.NoError(t, agents.SaveConfigForAgent(ctx, agent.InstanceId, configstore.ConfigFile, []byte("v2"), nil))
 
 	assert.Equal(t, "v2", firstConn.awaitRemoteConfig(t))
 	assert.Equal(t, "v2", secondConn.awaitRemoteConfig(t),
@@ -200,7 +234,7 @@ func TestSaveConfigForAgentDoesNotSendWhenTheStoreRejectsTheWrite(t *testing.T) 
 	agents.SetConfigStore(newTestStore(t, configstore.NewMemoryBackend()))
 
 	conn := newRecordingConnection()
-	agent, _ := connectAgent(t, agents, conn, "billing")
+	agent, _ := connectAgent(t, agents, conn, "billing", "prod")
 
 	err := agents.SaveConfigForAgent(context.Background(), agent.InstanceId, "../escape.yaml", []byte("v2"), nil)
 	require.Error(t, err)
@@ -212,7 +246,7 @@ func TestSaveConfigForAgentDoesNotSendWhenTheStoreRejectsTheWrite(t *testing.T) 
 func TestOutOfBandChangeInTheStoreReachesTheAgent(t *testing.T) {
 	ctx := context.Background()
 	backend := configstore.NewMemoryBackend()
-	_, err := backend.Put(ctx, configstore.DefaultKey, []byte("v1"))
+	_, err := backend.Put(ctx, "billing/prod/config.yaml", []byte("v1"))
 	require.NoError(t, err)
 
 	agents := newTestAgents()
@@ -221,10 +255,10 @@ func TestOutOfBandChangeInTheStoreReachesTheAgent(t *testing.T) {
 	store.OnChange(agents.ReloadConfigsFromStore)
 
 	conn := newRecordingConnection()
-	connectAgent(t, agents, conn, "billing")
+	connectAgent(t, agents, conn, "billing", "prod")
 
 	// Somebody uploads a new config straight to the bucket.
-	_, err = backend.Put(ctx, configstore.DefaultKey, []byte("v2"))
+	_, err = backend.Put(ctx, "billing/prod/config.yaml", []byte("v2"))
 	require.NoError(t, err)
 
 	assert.Equal(t, "v2", conn.awaitRemoteConfig(t))
@@ -233,7 +267,7 @@ func TestOutOfBandChangeInTheStoreReachesTheAgent(t *testing.T) {
 func TestConfigRemovedFromTheStoreIsNotWipedOnTheAgent(t *testing.T) {
 	ctx := context.Background()
 	backend := configstore.NewMemoryBackend()
-	_, err := backend.Put(ctx, configstore.DefaultKey, []byte("v1"))
+	_, err := backend.Put(ctx, "billing/prod/config.yaml", []byte("v1"))
 	require.NoError(t, err)
 
 	agents := newTestAgents()
@@ -241,9 +275,9 @@ func TestConfigRemovedFromTheStoreIsNotWipedOnTheAgent(t *testing.T) {
 	agents.SetConfigStore(store)
 
 	conn := newRecordingConnection()
-	agent, _ := connectAgent(t, agents, conn, "billing")
+	agent, _ := connectAgent(t, agents, conn, "billing", "prod")
 
-	backend.Delete(configstore.DefaultKey)
+	backend.Delete("billing/prod/config.yaml")
 	_, err = store.Sync(ctx)
 	require.NoError(t, err)
 
@@ -259,7 +293,7 @@ func TestAgentsWithoutConfigStoreKeepConfigsInMemory(t *testing.T) {
 	agents := newTestAgents()
 
 	conn := newRecordingConnection()
-	agent, _ := connectAgent(t, agents, conn, "billing")
+	agent, _ := connectAgent(t, agents, conn, "billing", "prod")
 
 	notify := make(chan struct{}, 1)
 	require.NoError(t, agents.SaveConfigForAgent(context.Background(), agent.InstanceId, "", []byte("in memory"), notify))

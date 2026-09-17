@@ -35,66 +35,107 @@ func TestResolvePrefersMostSpecificConfig(t *testing.T) {
 	backend := NewMemoryBackend()
 	store := New(backend, testOptions())
 
-	require.NoError(t, store.Save(ctx, DefaultKey, []byte("default")))
+	require.NoError(t, store.Save(ctx, ConfigFile, []byte("fallback")))
 
-	key, body, found := store.Resolve("instance-1", "billing")
+	key, body, found := store.Resolve("billing", "prod")
 	require.True(t, found)
-	assert.Equal(t, DefaultKey, key)
-	assert.Equal(t, "default", string(body))
+	assert.Equal(t, ConfigFile, key)
+	assert.Equal(t, "fallback", string(body))
 
-	require.NoError(t, store.Save(ctx, "services/billing.yaml", []byte("service")))
+	require.NoError(t, store.Save(ctx, "billing/config.yaml", []byte("component")))
 
-	key, body, found = store.Resolve("instance-1", "billing")
+	key, body, found = store.Resolve("billing", "prod")
 	require.True(t, found)
-	assert.Equal(t, "services/billing.yaml", key)
-	assert.Equal(t, "service", string(body))
+	assert.Equal(t, "billing/config.yaml", key)
+	assert.Equal(t, "component", string(body))
 
-	// Another service still falls back to the default config.
-	key, _, found = store.Resolve("instance-2", "shipping")
+	// Another component still falls back to the config at the root.
+	key, _, found = store.Resolve("shipping", "prod")
 	require.True(t, found)
-	assert.Equal(t, DefaultKey, key)
+	assert.Equal(t, ConfigFile, key)
 
-	require.NoError(t, store.Save(ctx, "instances/instance-1.yaml", []byte("instance")))
+	require.NoError(t, store.Save(ctx, "billing/prod/config.yaml", []byte("component in stack")))
 
-	key, body, found = store.Resolve("instance-1", "billing")
+	key, body, found = store.Resolve("billing", "prod")
 	require.True(t, found)
-	assert.Equal(t, "instances/instance-1.yaml", key)
-	assert.Equal(t, "instance", string(body))
+	assert.Equal(t, "billing/prod/config.yaml", key)
+	assert.Equal(t, "component in stack", string(body))
+
+	// The same component in another stack is unaffected.
+	key, body, found = store.Resolve("billing", "staging")
+	require.True(t, found)
+	assert.Equal(t, "billing/config.yaml", key)
+	assert.Equal(t, "component", string(body))
+}
+
+// A config file is picked up whatever it is called, so a pipeline is free to
+// name the single file in a folder after the component, the release, ...
+func TestResolveFindsTheConfigFileInTheFolder(t *testing.T) {
+	ctx := context.Background()
+	backend := NewMemoryBackend()
+	_, err := backend.Put(ctx, "billing/prod/otelcol.yaml", []byte("named config"))
+	require.NoError(t, err)
+
+	store := newTestStore(t, backend)
+
+	key, body, found := store.Resolve("billing", "prod")
+	require.True(t, found)
+	assert.Equal(t, "billing/prod/otelcol.yaml", key)
+	assert.Equal(t, "named config", string(body))
+
+	// A folder is expected to hold a single config file. If it holds more, the
+	// resolution must still be stable rather than depend on the map order.
+	_, err = backend.Put(ctx, "billing/prod/a-otelcol.yaml", []byte("first in order"))
+	require.NoError(t, err)
+	_, err = store.Sync(ctx)
+	require.NoError(t, err)
+
+	for range 5 {
+		key, _, found = store.Resolve("billing", "prod")
+		require.True(t, found)
+		assert.Equal(t, "billing/prod/a-otelcol.yaml", key)
+	}
 }
 
 func TestResolveReportsMissingConfig(t *testing.T) {
 	store := New(NewMemoryBackend(), testOptions())
 
-	key, body, found := store.Resolve("instance-1", "billing")
+	key, body, found := store.Resolve("billing", "prod")
 	assert.False(t, found)
 	assert.Empty(t, key)
 	assert.Nil(t, body)
 
 	// The Agent has no config yet, but we know where it would belong.
-	assert.Equal(t, "instances/instance-1.yaml", store.DefaultKeyFor("instance-1", "billing"))
+	assert.Equal(t, "billing/prod/config.yaml", store.DefaultKeyFor("billing", "prod"))
 }
 
 func TestCandidateKeysSanitizesNames(t *testing.T) {
 	assert.Equal(t,
-		[]string{"instances/01H8.yaml", "services/my_service_1.yaml", DefaultKey},
-		CandidateKeys("01H8", "my/service 1"),
+		[]string{"my_component_1/prod-eu/config.yaml", "my_component_1/config.yaml", ConfigFile},
+		CandidateKeys("my/component 1", "prod-eu"),
+	)
+
+	// An agent that does not report a stack shares the config of its component.
+	assert.Equal(t,
+		[]string{"billing/config.yaml", ConfigFile},
+		CandidateKeys("billing", ""),
 	)
 
 	// Names that cannot produce a safe key segment are skipped.
-	assert.Equal(t, []string{DefaultKey}, CandidateKeys("", "../.."))
+	assert.Equal(t, []string{ConfigFile}, CandidateKeys("../..", "prod"))
 }
 
 func TestStartLoadsExistingConfigs(t *testing.T) {
 	ctx := context.Background()
 	backend := NewMemoryBackend()
-	_, err := backend.Put(ctx, DefaultKey, []byte("default"))
+	_, err := backend.Put(ctx, ConfigFile, []byte("fallback"))
 	require.NoError(t, err)
-	_, err = backend.Put(ctx, "services/billing.yaml", []byte("service"))
+	_, err = backend.Put(ctx, "billing/prod/config.yaml", []byte("component in stack"))
 	require.NoError(t, err)
 
 	store := newTestStore(t, backend)
 
-	assert.Equal(t, []string{DefaultKey, "services/billing.yaml"}, store.Keys())
+	assert.Equal(t, []string{"billing/prod/config.yaml", ConfigFile}, store.Keys())
 }
 
 func TestStartFailsWhenBackendIsUnreachable(t *testing.T) {
@@ -108,7 +149,7 @@ func TestStartFailsWhenBackendIsUnreachable(t *testing.T) {
 func TestSyncNotifiesAboutOutOfBandChanges(t *testing.T) {
 	ctx := context.Background()
 	backend := NewMemoryBackend()
-	_, err := backend.Put(ctx, DefaultKey, []byte("v1"))
+	_, err := backend.Put(ctx, ConfigFile, []byte("v1"))
 	require.NoError(t, err)
 
 	store := New(backend, testOptions())
@@ -127,7 +168,7 @@ func TestSyncNotifiesAboutOutOfBandChanges(t *testing.T) {
 	}
 
 	// A change made directly in the backend must be picked up and announced.
-	_, err = backend.Put(ctx, DefaultKey, []byte("v2"))
+	_, err = backend.Put(ctx, ConfigFile, []byte("v2"))
 	require.NoError(t, err)
 
 	select {
@@ -136,12 +177,12 @@ func TestSyncNotifiesAboutOutOfBandChanges(t *testing.T) {
 		t.Fatal("timed out waiting for the change notification")
 	}
 
-	_, body, found := store.Resolve("instance-1", "billing")
+	_, body, found := store.Resolve("billing", "prod")
 	require.True(t, found)
 	assert.Equal(t, "v2", string(body))
 
 	// Deletions are announced as well.
-	backend.Delete(DefaultKey)
+	backend.Delete(ConfigFile)
 
 	select {
 	case <-changes:
@@ -149,14 +190,14 @@ func TestSyncNotifiesAboutOutOfBandChanges(t *testing.T) {
 		t.Fatal("timed out waiting for the deletion notification")
 	}
 
-	_, _, found = store.Resolve("instance-1", "billing")
+	_, _, found = store.Resolve("billing", "prod")
 	assert.False(t, found)
 }
 
 func TestSyncDoesNotRefetchUnchangedConfigs(t *testing.T) {
 	ctx := context.Background()
 	backend := &countingBackend{Backend: NewMemoryBackend()}
-	_, err := backend.Put(ctx, DefaultKey, []byte("v1"))
+	_, err := backend.Put(ctx, ConfigFile, []byte("v1"))
 	require.NoError(t, err)
 
 	store := New(backend, testOptions())
@@ -169,7 +210,7 @@ func TestSyncDoesNotRefetchUnchangedConfigs(t *testing.T) {
 	assert.False(t, changed)
 	assert.Equal(t, 1, backend.gets(), "unchanged config must not be downloaded again")
 
-	_, err = backend.Put(ctx, DefaultKey, []byte("v2"))
+	_, err = backend.Put(ctx, ConfigFile, []byte("v2"))
 	require.NoError(t, err)
 
 	changed, err = store.Sync(ctx)
@@ -181,7 +222,7 @@ func TestSyncDoesNotRefetchUnchangedConfigs(t *testing.T) {
 func TestSyncFailureKeepsTheLastKnownConfigs(t *testing.T) {
 	ctx := context.Background()
 	memory := NewMemoryBackend()
-	_, err := memory.Put(ctx, DefaultKey, []byte("v1"))
+	_, err := memory.Put(ctx, ConfigFile, []byte("v1"))
 	require.NoError(t, err)
 
 	backend := &failingBackend{Backend: memory}
@@ -194,7 +235,7 @@ func TestSyncFailureKeepsTheLastKnownConfigs(t *testing.T) {
 	_, err = store.Sync(ctx)
 	require.Error(t, err)
 
-	_, body, found := store.Resolve("instance-1", "billing")
+	_, body, found := store.Resolve("billing", "prod")
 	require.True(t, found, "a failed sync must not drop the configs we already have")
 	assert.Equal(t, "v1", string(body))
 }
@@ -216,13 +257,13 @@ func TestSaveWritesThroughToTheBackend(t *testing.T) {
 	backend := NewMemoryBackend()
 	store := New(backend, testOptions())
 
-	require.NoError(t, store.Save(ctx, DefaultKey, []byte("v1")))
+	require.NoError(t, store.Save(ctx, ConfigFile, []byte("v1")))
 
-	stored, err := backend.Get(ctx, DefaultKey)
+	stored, err := backend.Get(ctx, ConfigFile)
 	require.NoError(t, err)
 	assert.Equal(t, "v1", string(stored.Body))
 
-	cached, ok := store.Get(DefaultKey)
+	cached, ok := store.Get(ConfigFile)
 	require.True(t, ok)
 	assert.Equal(t, "v1", string(cached.Body))
 	assert.Equal(t, stored.Version, cached.Version)
@@ -234,21 +275,21 @@ func TestSaveFailureIsReported(t *testing.T) {
 
 	store := New(backend, testOptions())
 
-	err := store.Save(context.Background(), DefaultKey, []byte("v1"))
+	err := store.Save(context.Background(), ConfigFile, []byte("v1"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "access denied")
 
-	_, ok := store.Get(DefaultKey)
+	_, ok := store.Get(ConfigFile)
 	assert.False(t, ok, "a rejected write must not end up in the cache")
 }
 
 func TestValidateKey(t *testing.T) {
 	valid := []string{
-		DefaultKey,
-		"default.yml",
-		"instances/01H8.yaml",
-		"services/billing.yaml",
-		"teams/platform/services/billing.yaml",
+		ConfigFile,
+		"config.yml",
+		"billing/config.yaml",
+		"billing/prod/config.yaml",
+		"billing/prod/otelcol.yaml",
 	}
 	for _, key := range valid {
 		assert.NoError(t, ValidateKey(key), key)
@@ -256,15 +297,15 @@ func TestValidateKey(t *testing.T) {
 
 	invalid := []string{
 		"",
-		"/default.yaml",
-		"instances/",
-		"../default.yaml",
-		"instances/../../default.yaml",
-		"./default.yaml",
-		"instances//default.yaml",
-		"instances\\default.yaml",
-		"default.json",
-		"default.yaml\nx-amz-meta: evil",
+		"/config.yaml",
+		"billing/",
+		"../config.yaml",
+		"billing/../../config.yaml",
+		"./config.yaml",
+		"billing//config.yaml",
+		"billing\\config.yaml",
+		"config.json",
+		"config.yaml\nx-amz-meta: evil",
 	}
 	for _, key := range invalid {
 		assert.Error(t, ValidateKey(key), key)

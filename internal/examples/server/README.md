@@ -8,6 +8,10 @@ make build-example-server   # from the repository root
 server/bin/server           # from internal/examples
 ```
 
+Without `-s3-bucket` the Server keeps the configs in memory only, which is enough
+to click through the UI but loses every config on restart. Point it at a bucket
+to make the configs durable.
+
 Or run the whole thing — Server, Agent and a MinIO bucket — with
 `make docker-compose-up` from `internal/examples`, see
 [Trying it out](#trying-it-out).
@@ -35,18 +39,32 @@ That means:
 
 ### Bucket layout
 
+Agents are addressed by the **component** they run and the **stack** they run in,
+the two attributes they report in their `AgentDescription`. Individual instances
+and hosts are deliberately not addressable: every instance of a component in a
+stack runs the same config.
+
 Config files are stored verbatim, so they can be read and edited with any tool:
 
 ```
-<prefix>/instances/<instance-id>.yaml   config for a single Agent instance
-<prefix>/services/<service-name>.yaml   config for all instances of a service
-<prefix>/default.yaml                   fallback config for every other Agent
+<bucket>/<prefix>/<component>/<stack>/config.yaml   config for a component in one stack
+<bucket>/<prefix>/<component>/config.yaml           config for a component in every stack
+<bucket>/<prefix>/config.yaml                       fallback config for every other Agent
 ```
 
-An Agent gets the first file that exists, in the order above: an instance file
-overrides a service file, which overrides the default. The service name comes
-from the Agent's `service.name` attribute; characters that are not `[A-Za-z0-9._-]`
-are replaced with `_` when it is turned into a key.
+The prefix defaults to `otel-collector`, so with `-s3-bucket my-bucket` an agent
+reporting `component=billing` and `stack=prod` is configured from
+`s3://my-bucket/otel-collector/billing/prod/config.yaml`.
+
+An Agent gets the config from the first of those folders that holds one, so a
+component/stack file overrides a component wide file, which overrides the
+fallback. Attribute characters that are not `[A-Za-z0-9._-]` are replaced with
+`_` when they are turned into a key segment.
+
+Exactly one config file per folder is expected. The Server always writes
+`config.yaml`, but a file a pipeline put there under a different name is picked
+up just as well; if a folder holds several config files, the first one in
+lexicographic order wins.
 
 Objects under the prefix that do not end in `.yaml` or `.yml` are ignored, so the
 bucket can also hold READMEs, checksums or other bookkeeping files.
@@ -59,7 +77,7 @@ config change and turns a rollback into a bucket operation.
 | Flag | Environment variable | Default | Description |
 | --- | --- | --- | --- |
 | `-s3-bucket` | `OPAMP_S3_BUCKET` | _(empty)_ | Bucket holding the config files. When empty, configs are kept in memory only and are lost on restart. |
-| `-s3-prefix` | `OPAMP_S3_PREFIX` | `otel-configs` | Prefix (folder) the config files live under. |
+| `-s3-prefix` | `OPAMP_S3_PREFIX` | `otel-collector` | Key inside the bucket the config files live under. An empty value falls back to the default. |
 | `-s3-region` | `OPAMP_S3_REGION` | _(from AWS config)_ | Region of the bucket. |
 | `-s3-endpoint` | `OPAMP_S3_ENDPOINT` | _(AWS)_ | Endpoint override for S3 compatible stores (MinIO, LocalStack). |
 | `-s3-path-style` | `OPAMP_S3_PATH_STYLE` | `false` | Use `<endpoint>/<bucket>` addressing. Required by most S3 compatible stores. |
@@ -70,8 +88,22 @@ Credentials are taken from the default AWS credential chain (environment,
 shared config, IRSA/instance role, ...).
 
 The Server refuses to start if a bucket is configured but cannot be read, so a
-misconfigured bucket or missing permission is reported at startup instead of
+misconfigured bucket or a missing permission is reported at startup instead of
 silently handing out empty configs.
+
+### Agent attributes
+
+The Server reads two attributes from the Agent description, either of which may
+be identifying or non-identifying:
+
+| Attribute | Used for |
+| --- | --- |
+| `component` | The `<component>` folder the config is looked up in. |
+| `stack` | The `<stack>` folder inside the component folder. |
+
+An Agent that reports neither gets the fallback `config.yaml`; one that reports
+only a component gets the component wide file. The example Agent sends both when
+started with `-component`/`-stack` (`AGENT_COMPONENT`/`AGENT_STACK`).
 
 ### IAM permissions
 
@@ -83,12 +115,12 @@ silently handing out empty configs.
       "Effect": "Allow",
       "Action": "s3:ListBucket",
       "Resource": "arn:aws:s3:::my-bucket",
-      "Condition": { "StringLike": { "s3:prefix": "otel-configs/*" } }
+      "Condition": { "StringLike": { "s3:prefix": "otel-collector/*" } }
     },
     {
       "Effect": "Allow",
       "Action": ["s3:GetObject", "s3:PutObject"],
-      "Resource": "arn:aws:s3:::my-bucket/otel-configs/*"
+      "Resource": "arn:aws:s3:::my-bucket/otel-collector/*"
     }
   ]
 }
@@ -125,10 +157,15 @@ make docker-compose-logs
 | MinIO API | <http://localhost:9000> | |
 
 The `minio-init` service creates the bucket and uploads
-[`server/configs/default.yaml`](configs/default.yaml) to
-`opamp-configs/otel-configs/default.yaml` on first start. The bucket lives in a
+[`server/configs/config.yaml`](configs/config.yaml) to
+`opamp-configs/otel-collector/config.yaml` on first start. The bucket lives in a
 named volume, so later edits survive `make docker-compose-down` and are not
 overwritten by the seed (`docker compose down -v` resets it).
+
+The example Agent reports `component=example-collector` and `stack=dev` in the
+stack (`AGENT_COMPONENT`/`AGENT_STACK`), so it starts on the fallback config and
+its own config file would be
+`otel-collector/example-collector/dev/config.yaml`.
 
 Two ways to watch the sync work, with `OPAMP_S3_SYNC_INTERVAL` set to 5s in the
 stack:
@@ -137,29 +174,30 @@ stack:
 # 1. Change the config in the bucket and watch it reach the agent.
 export AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin AWS_REGION=us-east-1
 aws --endpoint-url http://localhost:9000 \
-  s3 cp my-config.yaml s3://opamp-configs/otel-configs/default.yaml
+  s3 cp my-config.yaml s3://opamp-configs/otel-collector/config.yaml
 
 # 2. Change the config in the admin UI and watch it appear in the bucket.
 aws --endpoint-url http://localhost:9000 \
-  s3 cp s3://opamp-configs/otel-configs/default.yaml -
+  s3 cp s3://opamp-configs/otel-collector/config.yaml -
 ```
 
 The agent page in the UI shows the effective config the Agent reports back, so
 both paths are visible end to end.
 
-Uploading a narrower file takes precedence over `default.yaml`. The example
-Agent reports `io.opentelemetry.collector` as its `service.name`, so
+Uploading a narrower file takes precedence over the fallback:
 
 ```shell
+# Applies to every example agent in the dev stack.
 aws --endpoint-url http://localhost:9000 s3 cp my-config.yaml \
-  s3://opamp-configs/otel-configs/services/io.opentelemetry.collector.yaml
+  s3://opamp-configs/otel-collector/example-collector/dev/config.yaml
+
+# Applies to the example agents in every stack.
+aws --endpoint-url http://localhost:9000 s3 cp my-config.yaml \
+  s3://opamp-configs/otel-collector/example-collector/config.yaml
 ```
 
-applies to every example Agent, while
-`otel-configs/instances/<instance-id>.yaml` (the instance id is shown on the
-agent page) applies to a single one.
-
-Scale the Agents to see a shared config file fan out:
+Scale the Agents to see a config file fan out to every instance of the component
+in the stack:
 
 ```shell
 make docker-compose-scale AGENTS=3
@@ -174,7 +212,7 @@ Server from MinIO to AWS:
 
 ```shell
 OPAMP_S3_BUCKET=my-bucket
-OPAMP_S3_PREFIX=otel-configs
+OPAMP_S3_PREFIX=otel-collector
 OPAMP_S3_ENDPOINT=            # explicitly empty: talk to AWS, not to MinIO
 OPAMP_S3_PATH_STYLE=false
 AWS_REGION=eu-central-1
@@ -196,11 +234,11 @@ docker run -d --name minio -p 9000:9000 -p 9001:9001 \
   -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
   minio/minio server /data --console-address ":9001"
 
-# 2. Create the bucket and a default config.
+# 2. Create the bucket and a config file.
 export AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin AWS_REGION=us-east-1
 aws --endpoint-url http://localhost:9000 s3 mb s3://opamp-configs
 aws --endpoint-url http://localhost:9000 \
-  s3 cp server/configs/default.yaml s3://opamp-configs/otel-configs/default.yaml
+  s3 cp server/configs/config.yaml s3://opamp-configs/otel-collector/config.yaml
 
 # 3. Run the Server against it.
 server/bin/server \
@@ -208,6 +246,10 @@ server/bin/server \
   -s3-endpoint http://localhost:9000 \
   -s3-path-style \
   -s3-sync-interval 5s
+
+# 4. Run an agent that asks for the config of a component in a stack.
+agent/bin/agent -component example-collector -stack dev \
+  -endpoint wss://127.0.0.1:4320/v1/opamp -tls-insecure_skip_verify
 ```
 
 ## Implementation

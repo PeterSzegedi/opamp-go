@@ -32,8 +32,8 @@ type fakeConfigStore struct{ location string }
 
 func (s fakeConfigStore) Resolve(string, string) (string, []byte, bool) { return "", nil, false }
 
-func (s fakeConfigStore) DefaultKeyFor(instanceID, _ string) string {
-	return "instances/" + instanceID + ".yaml"
+func (s fakeConfigStore) DefaultKeyFor(component, stack string) string {
+	return component + "/" + stack + "/config.yaml"
 }
 
 func (s fakeConfigStore) Save(context.Context, string, []byte) error { return nil }
@@ -86,14 +86,40 @@ func TestAgentPageRendersWithoutConfigStore(t *testing.T) {
 
 // With a config store the page shows which file in the store is being edited.
 func TestAgentPageRendersConfigStoreFile(t *testing.T) {
-	agent := newTestAgent(t, fakeConfigStore{location: "s3://bucket/otel-configs"})
+	agent := newTestAgent(t, fakeConfigStore{location: "s3://bucket/otel-collector"})
 	agent.CustomInstanceConfig = "stored config"
-	agent.ConfigKey = "services/billing.yaml"
+	agent.ConfigKey = "billing/prod/config.yaml"
 
 	page := renderAgentTemplate(t, agent)
 
-	assert.Contains(t, page, "s3://bucket/otel-configs")
-	assert.Contains(t, page, "services/billing.yaml")
+	assert.Contains(t, page, "s3://bucket/otel-collector")
+	assert.Contains(t, page, "billing/prod/config.yaml")
 	assert.Contains(t, page, "stored config")
 	assert.Contains(t, page, `name="configkey"`)
+}
+
+// The component and stack the config is resolved by are shown on the page.
+func TestAgentPageRendersComponentAndStack(t *testing.T) {
+	agent := newTestAgent(t, fakeConfigStore{location: "s3://bucket/otel-collector"})
+	agent.Status = &protobufs.AgentToServer{
+		AgentDescription: &protobufs.AgentDescription{
+			IdentifyingAttributes: []*protobufs.KeyValue{
+				{
+					Key:   data.ComponentAttribute,
+					Value: &protobufs.AnyValue{Value: &protobufs.AnyValue_StringValue{StringValue: "billing"}},
+				},
+				{
+					Key:   data.StackAttribute,
+					Value: &protobufs.AnyValue{Value: &protobufs.AnyValue_StringValue{StringValue: "prod"}},
+				},
+			},
+		},
+	}
+
+	page := renderAgentTemplate(t, agent)
+
+	assert.Contains(t, page, "Component:")
+	assert.Contains(t, page, "billing")
+	assert.Contains(t, page, "Stack:")
+	assert.Contains(t, page, "prod")
 }

@@ -8,9 +8,9 @@ import (
 	"time"
 )
 
-// MemoryBackend is an in-memory Backend. It is used by the tests and lets the
-// example Server run with the same code paths as the S3 backend when no bucket
-// is configured, at the cost of losing the configs on restart.
+// MemoryBackend is an in-memory Backend. It is used by the tests to exercise the
+// same code paths as the S3 backend without a bucket, at the cost of losing the
+// configs on restart.
 type MemoryBackend struct {
 	mux     sync.RWMutex
 	objects map[string]Config

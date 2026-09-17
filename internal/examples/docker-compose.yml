@@ -28,7 +28,7 @@ services:
       - opamp-network
     restart: unless-stopped
 
-  # Creates the bucket and seeds the default config, unless they already exist.
+  # Creates the bucket and seeds the fallback config, unless they already exist.
   # Configs stored in the volume survive a restart of the stack, so changes made
   # through the UI are not overwritten by the seed.
   minio-init:
@@ -41,7 +41,7 @@ services:
       MINIO_ROOT_USER: ${AWS_ACCESS_KEY_ID:-minioadmin}
       MINIO_ROOT_PASSWORD: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
       BUCKET: ${OPAMP_S3_BUCKET:-opamp-configs}
-      PREFIX: ${OPAMP_S3_PREFIX:-otel-configs}
+      PREFIX: ${OPAMP_S3_PREFIX:-otel-collector}
     volumes:
       - ./server/configs:/seed:ro
     entrypoint: ["/bin/sh", "-c"]
@@ -50,10 +50,10 @@ services:
         set -e
         mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
         mc mb --ignore-existing "local/$$BUCKET"
-        if mc stat "local/$$BUCKET/$$PREFIX/default.yaml" >/dev/null 2>&1; then
+        if mc stat "local/$$BUCKET/$$PREFIX/config.yaml" >/dev/null 2>&1; then
           echo "Config store already seeded, leaving local/$$BUCKET/$$PREFIX as it is."
         else
-          mc cp /seed/default.yaml "local/$$BUCKET/$$PREFIX/default.yaml"
+          mc cp /seed/config.yaml "local/$$BUCKET/$$PREFIX/config.yaml"
         fi
     networks:
       - opamp-network
@@ -69,7 +69,7 @@ services:
       - "4321:4321"
     environment:
       OPAMP_S3_BUCKET: ${OPAMP_S3_BUCKET:-opamp-configs}
-      OPAMP_S3_PREFIX: ${OPAMP_S3_PREFIX:-otel-configs}
+      OPAMP_S3_PREFIX: ${OPAMP_S3_PREFIX:-otel-collector}
       OPAMP_S3_ENDPOINT: ${OPAMP_S3_ENDPOINT-http://minio:9000}
       OPAMP_S3_PATH_STYLE: ${OPAMP_S3_PATH_STYLE:-true}
       OPAMP_S3_SYNC_INTERVAL: ${OPAMP_S3_SYNC_INTERVAL:-5s}
@@ -92,6 +92,11 @@ services:
       - "--endpoint"
       - "wss://opamp-server:4320/v1/opamp"
       - "--tls-insecure_skip_verify"
+    environment:
+      # The component and the stack are what the server resolves the agent's
+      # config by: <bucket>/<prefix>/<component>/<stack>/config.yaml.
+      AGENT_COMPONENT: ${AGENT_COMPONENT:-example-collector}
+      AGENT_STACK: ${AGENT_STACK:-dev}
     networks:
       - opamp-network
     depends_on:

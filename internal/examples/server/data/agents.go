@@ -81,9 +81,10 @@ func (agents *Agents) ConfigStore() ConfigStore {
 }
 
 // SaveConfigForAgent writes a config to the config store and then hands the
-// stored config to every Agent it applies to, which may be more than the Agent
-// the change was made for: a config stored under a shared key (a service config
-// or the default config) applies to all Agents that resolve to that key.
+// stored config to every Agent it applies to, which is normally more than the
+// Agent the change was made for: a config file applies to every instance of a
+// component in a stack, and a config stored under a shared key (a component wide
+// file or the fallback config) applies to all Agents that resolve to that key.
 //
 // The config is written to the store first and is only offered to the Agents
 // once the store accepted it, so that the Agents can never run a config that is

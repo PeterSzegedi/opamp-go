@@ -64,6 +64,12 @@ type Agent struct {
 	agentVersion string
 	instanceId   uuid.UUID
 
+	// component and stack tell the OpAMP Server which config applies to this
+	// Agent. They are reported as identifying attributes and are left out of the
+	// Agent description when empty.
+	component string
+	stack     string
+
 	agentConfig *config.AgentConfig
 
 	effectiveConfig []byte
@@ -128,6 +134,22 @@ func WithAgentVersion(s string) Option {
 func WithInstanceID(id uuid.UUID) Option {
 	return func(agent *Agent) {
 		agent.instanceId = id
+	}
+}
+
+// WithComponent is used to set the component the Agent belongs to, which the
+// Server resolves the Agent's config by.
+func WithComponent(s string) Option {
+	return func(agent *Agent) {
+		agent.component = s
+	}
+}
+
+// WithStack is used to set the stack the Agent runs in, which the Server
+// resolves the Agent's config by.
+func WithStack(s string) Option {
+	return func(agent *Agent) {
+		agent.stack = s
 	}
 }
 
@@ -319,6 +341,28 @@ func (agent *Agent) createAgentIdentity() {
 				},
 			},
 		},
+	}
+
+	// The component and the stack are what the Server looks up the Agent's config
+	// by, so they identify the Agent just like its type and version do.
+	if agent.component != "" {
+		agent.agentDescription.IdentifyingAttributes = append(
+			agent.agentDescription.IdentifyingAttributes,
+			stringAttribute("component", agent.component),
+		)
+	}
+	if agent.stack != "" {
+		agent.agentDescription.IdentifyingAttributes = append(
+			agent.agentDescription.IdentifyingAttributes,
+			stringAttribute("stack", agent.stack),
+		)
+	}
+}
+
+func stringAttribute(key, value string) *protobufs.KeyValue {
+	return &protobufs.KeyValue{
+		Key:   key,
+		Value: &protobufs.AnyValue{Value: &protobufs.AnyValue_StringValue{StringValue: value}},
 	}
 }
 
