@@ -53,6 +53,11 @@ type Agent struct {
 	// the user in the UI.
 	CustomInstanceConfig string
 
+	// Key in the config store that CustomInstanceConfig was loaded from, and that
+	// changes made in the UI are written back to. Empty when no config store is
+	// configured.
+	ConfigKey string
+
 	// Client certificate
 	ClientCert                  *x509.Certificate
 	ClientCertSha256Fingerprint string
@@ -63,6 +68,10 @@ type Agent struct {
 
 	// Remote config that we will give to this Agent.
 	remoteConfig *protobufs.AgentRemoteConfig
+
+	// Source of truth for this Agent's config. May be nil, in which case the
+	// config is only kept in memory.
+	configStore ConfigStore
 
 	// Channels to notify when this Agent's status is updated next time.
 	statusUpdateWatchers []chan<- struct{}
@@ -200,6 +209,8 @@ func (agent *Agent) CloneReadonly() *Agent {
 		Status:                      cloneProto[protobufs.AgentToServer](agent.Status),
 		EffectiveConfig:             agent.EffectiveConfig,
 		CustomInstanceConfig:        agent.CustomInstanceConfig,
+		ConfigKey:                   agent.ConfigKey,
+		configStore:                 agent.configStore,
 		remoteConfig:                cloneProto[protobufs.AgentRemoteConfig](agent.remoteConfig),
 		StartedAt:                   agent.StartedAt,
 		LastSeenAt:                  agent.LastSeenAt,
@@ -407,6 +418,12 @@ func (agent *Agent) processStatusUpdate(
 	if agentDescrChanged {
 		// Only need to check if config has changed if the agent is able to accept a new config
 		if agent.hasCapability(protobufs.AgentCapabilities_AgentCapabilities_AcceptsRemoteConfig) {
+			// The Agent just told us who it is, which may resolve to a different
+			// config in the store (e.g. its service.name changed, or this is the
+			// first status report after a reconnect), so re-read the config from
+			// the source of truth before recalculating.
+			agent.loadConfigFromStore()
+
 			// We need to recalculate the config.
 			configChanged = agent.calcRemoteConfig()
 			if agent.Status.RemoteConfigStatus != nil {
@@ -446,6 +463,80 @@ func (agent *Agent) SetCustomConfig(
 
 	agent.CustomInstanceConfig = string(config.ConfigMap[""].Body)
 
+	agent.sendConfigIfChanged(notifyWhenConfigIsApplied)
+}
+
+// RefreshConfigFromStore re-reads this Agent's config from the config store and
+// sends it to the Agent if it differs from what the Agent was last offered. It
+// is a no-op when no config store is configured.
+//
+// notifyWhenConfigIsApplied follows the same contract as in SetCustomConfig.
+func (agent *Agent) RefreshConfigFromStore(notifyWhenConfigIsApplied chan<- struct{}) {
+	agent.mux.Lock()
+
+	agent.loadConfigFromStore()
+
+	agent.sendConfigIfChanged(notifyWhenConfigIsApplied)
+}
+
+// loadConfigFromStore refreshes the Agent's config from the config store, which
+// is the source of truth for it. The caller must hold agent.mux.
+func (agent *Agent) loadConfigFromStore() {
+	if agent.configStore == nil {
+		// No external store, the config is kept in memory only.
+		return
+	}
+
+	instanceId := agent.InstanceIdStr
+	serviceName := agent.displayAttribute("service.name")
+
+	key, body, found := agent.configStore.Resolve(instanceId, serviceName)
+	if !found {
+		// The store holds no config for this Agent. Keep the config the Agent
+		// currently has: handing out an empty config would wipe the Agent's
+		// configuration, so a config file that is missing (not created yet, or
+		// deleted by mistake) must not cascade into an outage.
+		//
+		// Still remember where a config for this Agent would belong, so that the
+		// UI can offer to create it.
+		agent.ConfigKey = agent.configStore.DefaultKeyFor(instanceId, serviceName)
+		return
+	}
+
+	agent.ConfigKey = key
+	agent.CustomInstanceConfig = string(body)
+}
+
+// ConfigStoreLocation describes where this Agent's config is stored, for display
+// purposes. It is empty when no config store is configured.
+func (agent *Agent) ConfigStoreLocation() string {
+	if agent.configStore == nil {
+		return ""
+	}
+
+	return agent.configStore.Location()
+}
+
+// storeConfigKey returns the key this Agent's config is stored under, falling
+// back to the key a config for it would be created at.
+func (agent *Agent) storeConfigKey() string {
+	agent.mux.RLock()
+	defer agent.mux.RUnlock()
+
+	if agent.ConfigKey != "" {
+		return agent.ConfigKey
+	}
+	if agent.configStore == nil {
+		return ""
+	}
+
+	return agent.configStore.DefaultKeyFor(agent.InstanceIdStr, agent.displayAttribute("service.name"))
+}
+
+// sendConfigIfChanged recalculates the remote config of the Agent and sends it
+// to the Agent if it changed. The caller must hold agent.mux, which this method
+// releases.
+func (agent *Agent) sendConfigIfChanged(notifyWhenConfigIsApplied chan<- struct{}) {
 	configChanged := agent.calcRemoteConfig()
 	if configChanged {
 		if notifyWhenConfigIsApplied != nil {

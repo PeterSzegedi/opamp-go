@@ -1,0 +1,17 @@
+# Default config handed to every Agent that has no more specific config file in
+# the bucket. Uploaded to s3://opamp-configs/otel-configs/default.yaml by the
+# docker compose stack, and from there on owned by the bucket: edit it in the
+# admin UI, with `mc`/`aws s3 cp`, or from a pipeline.
+#
+# The example Agent merges what it receives on top of its own local config, so
+# this file only needs to carry the settings that should be overridden.
+exporters:
+  otlp:
+    endpoint: otelcol.example.com:4317
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp]

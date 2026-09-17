@@ -1,10 +1,14 @@
 package data
 
 import (
+	"context"
 	"crypto/sha256"
+	"fmt"
 	"io"
 	"log"
 	"sync"
+
+	"github.com/google/uuid"
 
 	"github.com/open-telemetry/opamp-go/protobufs"
 	"github.com/open-telemetry/opamp-go/protobufshelpers"
@@ -15,6 +19,10 @@ type Agents struct {
 	mux         sync.RWMutex
 	agentsById  map[InstanceId]*Agent
 	connections map[types.Connection]map[InstanceId]bool
+
+	// Source of truth for the Agents' configs. May be nil, in which case configs
+	// are only kept in memory and are lost when the Server restarts.
+	configStore ConfigStore
 }
 
 var logger = log.New(log.Default().Writer(), "[AGENTS] ", log.Default().Flags()|log.Lmsgprefix|log.Lmicroseconds)
@@ -49,6 +57,123 @@ func (agents *Agents) SetCustomConfigForAgent(
 	agent := agents.FindAgent(agentId)
 	if agent != nil {
 		agent.SetCustomConfig(config, notifyNextStatusUpdate)
+	}
+}
+
+// SetConfigStore makes store the source of truth for the Agents' configs. It
+// must be called before the OpAMP Server starts accepting connections.
+func (agents *Agents) SetConfigStore(store ConfigStore) {
+	agents.mux.Lock()
+	defer agents.mux.Unlock()
+
+	agents.configStore = store
+	for _, agent := range agents.agentsById {
+		agent.configStore = store
+	}
+}
+
+// ConfigStore returns the configured source of truth for configs, or nil.
+func (agents *Agents) ConfigStore() ConfigStore {
+	agents.mux.RLock()
+	defer agents.mux.RUnlock()
+
+	return agents.configStore
+}
+
+// SaveConfigForAgent writes a config to the config store and then hands the
+// stored config to every Agent it applies to, which may be more than the Agent
+// the change was made for: a config stored under a shared key (a service config
+// or the default config) applies to all Agents that resolve to that key.
+//
+// The config is written to the store first and is only offered to the Agents
+// once the store accepted it, so that the Agents can never run a config that is
+// not in the store. If the store rejects the write, nothing is sent to any
+// Agent and the error is returned.
+//
+// notifyNextStatusUpdate is notified once the Agent identified by agentId
+// reported back after the change. It must have a buffer size of at least 1.
+func (agents *Agents) SaveConfigForAgent(
+	ctx context.Context,
+	agentId InstanceId,
+	configKey string,
+	body []byte,
+	notifyNextStatusUpdate chan<- struct{},
+) error {
+	store := agents.ConfigStore()
+	if store == nil {
+		// No external store configured, keep the config in memory only.
+		agents.SetCustomConfigForAgent(
+			agentId,
+			&protobufs.AgentConfigMap{
+				ConfigMap: map[string]*protobufs.AgentConfigObject{
+					"": {Body: body},
+				},
+			},
+			notifyNextStatusUpdate,
+		)
+		return nil
+	}
+
+	if configKey == "" {
+		// The caller did not say where to store the config, use the file this
+		// Agent's config comes from (or would be created at).
+		agent := agents.FindAgent(agentId)
+		if agent == nil {
+			return fmt.Errorf("agent %s is not connected, cannot tell where to store its config",
+				uuid.UUID(agentId))
+		}
+		configKey = agent.storeConfigKey()
+	}
+
+	if err := store.Save(ctx, configKey, body); err != nil {
+		return err
+	}
+
+	agents.refreshConfigsFromStore(&agentId, notifyNextStatusUpdate)
+
+	return nil
+}
+
+// ReloadConfigsFromStore re-reads the config of every Agent from the config
+// store and pushes the ones that changed. It is called after the store picked
+// up a change that was made outside of this Server, for example by a pipeline
+// that uploaded a new config file to the bucket.
+func (agents *Agents) ReloadConfigsFromStore() {
+	agents.refreshConfigsFromStore(nil, nil)
+}
+
+func (agents *Agents) refreshConfigsFromStore(
+	notifyAgentId *InstanceId,
+	notifyNextStatusUpdate chan<- struct{},
+) {
+	// Take a snapshot of the Agents so that we do not hold the Agents lock while
+	// sending configs out.
+	agents.mux.RLock()
+	snapshot := make([]*Agent, 0, len(agents.agentsById))
+	for _, agent := range agents.agentsById {
+		snapshot = append(snapshot, agent)
+	}
+	agents.mux.RUnlock()
+
+	notified := false
+	for _, agent := range snapshot {
+		var notify chan<- struct{}
+		if notifyAgentId != nil && agent.InstanceId == *notifyAgentId {
+			notify = notifyNextStatusUpdate
+			notified = true
+		}
+
+		agent.RefreshConfigFromStore(notify)
+	}
+
+	if notifyNextStatusUpdate != nil && !notified {
+		// The Agent disconnected while the config was being stored. The config is
+		// safely in the store and will be offered when the Agent comes back, so
+		// release the waiter instead of making it wait for a timeout.
+		select {
+		case notifyNextStatusUpdate <- struct{}{}:
+		default:
+		}
 	}
 }
 
@@ -90,6 +215,7 @@ func (agents *Agents) FindOrCreateAgent(agentId InstanceId, conn types.Connectio
 	agent := agents.agentsById[agentId]
 	if agent == nil {
 		agent = NewAgent(agentId, conn)
+		agent.configStore = agents.configStore
 		agents.agentsById[agentId] = agent
 
 		// Ensure the Agent's instance id is associated with the connection.

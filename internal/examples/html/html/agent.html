@@ -90,6 +90,26 @@
             <pre><code class="language-yaml">{{ .EffectiveConfig }}</code></pre>
         </td>
         <td valign="top">
+            {{if .ConfigStoreLocation }}
+            Configuration in {{ .ConfigStoreLocation }}:<br/>
+            <form action="/save_config" method="post">
+            <input type="hidden" name="instanceid" value="{{ .InstanceIdStr }}"/>
+            <label for="configkey">File:</label>
+            <input type="text" id="configkey" name="configkey" size="60" value="{{ .ConfigKey }}"/><br/>
+            <textarea rows="20" name="config">{{ .CustomInstanceConfig }}</textarea><br/>
+            <small>
+                Saving writes this file to the config store, which is the source of truth.
+                Shared files (<code>services/&lt;service&gt;.yaml</code>, <code>default.yaml</code>)
+                are applied to every agent that resolves to them.
+            </small><br/>
+             {{if .Status.RemoteConfigStatus }}
+                {{if .Status.RemoteConfigStatus.ErrorMessage }}
+                <span style="color:red">Failed: {{ .Status.RemoteConfigStatus.ErrorMessage }}</span><br/>
+                {{end}}
+             {{end}}
+            <input type="submit" value="Save to Config Store and Send to Agent"/>
+            </form>
+            {{else}}
             Additional Configuration:<br/>
             <form action="/save_config" method="post">
             <input type="hidden" name="instanceid" value="{{ .InstanceIdStr }}"/>
@@ -101,6 +121,7 @@
              {{end}}
             <input type="submit" value="Save and Send to Agent"/>
             </form>
+            {{end}}
         </td>
     </tr>
 </table>

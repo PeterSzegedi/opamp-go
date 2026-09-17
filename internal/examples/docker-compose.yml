@@ -1,4 +1,64 @@
 services:
+  # S3 compatible store holding the agent config files. The OpAMP Server treats
+  # it as the source of truth: configs saved in the admin UI are written here,
+  # and configs written here by anything else are synced out to the agents.
+  #
+  # Point the stack at a real S3 bucket by overriding the OPAMP_S3_* and AWS_*
+  # variables below, for example in internal/examples/.env.
+  minio:
+    # quay.io rather than Docker Hub: MinIO publishes to both, and quay.io is
+    # not subject to Docker Hub's anonymous pull rate limits.
+    image: quay.io/minio/minio:latest
+    container_name: opamp-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${AWS_ACCESS_KEY_ID:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - opamp-network
+    restart: unless-stopped
+
+  # Creates the bucket and seeds the default config, unless they already exist.
+  # Configs stored in the volume survive a restart of the stack, so changes made
+  # through the UI are not overwritten by the seed.
+  minio-init:
+    image: quay.io/minio/mc:latest
+    container_name: opamp-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${AWS_ACCESS_KEY_ID:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
+      BUCKET: ${OPAMP_S3_BUCKET:-opamp-configs}
+      PREFIX: ${OPAMP_S3_PREFIX:-otel-configs}
+    volumes:
+      - ./server/configs:/seed:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        mc mb --ignore-existing "local/$$BUCKET"
+        if mc stat "local/$$BUCKET/$$PREFIX/default.yaml" >/dev/null 2>&1; then
+          echo "Config store already seeded, leaving local/$$BUCKET/$$PREFIX as it is."
+        else
+          mc cp /seed/default.yaml "local/$$BUCKET/$$PREFIX/default.yaml"
+        fi
+    networks:
+      - opamp-network
+    restart: "no"
+
   opamp-server:
     build:
       context: ../..
@@ -7,6 +67,18 @@ services:
     ports:
       - "4320:4320"
       - "4321:4321"
+    environment:
+      OPAMP_S3_BUCKET: ${OPAMP_S3_BUCKET:-opamp-configs}
+      OPAMP_S3_PREFIX: ${OPAMP_S3_PREFIX:-otel-configs}
+      OPAMP_S3_ENDPOINT: ${OPAMP_S3_ENDPOINT-http://minio:9000}
+      OPAMP_S3_PATH_STYLE: ${OPAMP_S3_PATH_STYLE:-true}
+      OPAMP_S3_SYNC_INTERVAL: ${OPAMP_S3_SYNC_INTERVAL:-5s}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
     networks:
       - opamp-network
     restart: unless-stopped
@@ -31,3 +103,6 @@ services:
 networks:
   opamp-network:
     driver: bridge
+
+volumes:
+  minio-data:
