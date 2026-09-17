@@ -53,6 +53,17 @@ type Agent struct {
 	// The time when the agent last reported status.
 	LastSeenAt time.Time
 
+	// connectedAt is when the Agent was first registered. It gives the reaper a
+	// starting point for an Agent that connected but never reported a status, so
+	// that it is not treated as infinitely stale.
+	connectedAt time.Time
+
+	// unhealthySince is when the Agent started reporting itself unhealthy. It is
+	// zero while the Agent is healthy, and also while it reports no health at
+	// all: an Agent that does not have the ReportsHealth capability must not be
+	// reaped for being "unhealthy".
+	unhealthySince time.Time
+
 	// Effective config reported by the Agent.
 	EffectiveConfig string
 
@@ -88,7 +99,12 @@ func NewAgent(
 	instanceId InstanceId,
 	conn types.Connection,
 ) *Agent {
-	agent := &Agent{InstanceId: instanceId, InstanceIdStr: uuid.UUID(instanceId).String(), conn: conn}
+	agent := &Agent{
+		InstanceId:    instanceId,
+		InstanceIdStr: uuid.UUID(instanceId).String(),
+		conn:          conn,
+		connectedAt:   time.Now().UTC(),
+	}
 	tslConn, ok := conn.Connection().(*tls.Conn)
 	if ok {
 		// Client is using TLS connection.
@@ -233,6 +249,8 @@ func (agent *Agent) CloneReadonly() *Agent {
 		remoteConfig:                cloneProto[protobufs.AgentRemoteConfig](agent.remoteConfig),
 		StartedAt:                   agent.StartedAt,
 		LastSeenAt:                  agent.LastSeenAt,
+		connectedAt:                 agent.connectedAt,
+		unhealthySince:              agent.unhealthySince,
 		ClientCert:                  agent.ClientCert,
 		ClientCertOfferError:        agent.ClientCertOfferError,
 		ClientCertSha256Fingerprint: agent.ClientCertSha256Fingerprint,
@@ -251,6 +269,7 @@ func (agent *Agent) UpdateStatus(
 	agent.LastSeenAt = time.Now().UTC()
 
 	agent.processStatusUpdate(statusMsg, response)
+	agent.trackHealthLocked(agent.LastSeenAt)
 
 	if statusMsg.ConnectionSettingsRequest != nil {
 		agent.processConnectionSettingsRequest(statusMsg.ConnectionSettingsRequest.Opamp, response)
@@ -267,6 +286,30 @@ func (agent *Agent) UpdateStatus(
 
 	// Notify watcher outside mutex to avoid blocking the mutex for too long.
 	notifyStatusWatchers(statusUpdateWatchers)
+}
+
+// trackHealthLocked remembers since when the Agent has been reporting itself
+// unhealthy, which is what the reaper ages out. An Agent that reports no health
+// at all (it does not have the ReportsHealth capability) is deliberately not
+// counted as unhealthy: such an Agent can only be reaped for going silent.
+// The caller must hold agent.mux.
+func (agent *Agent) trackHealthLocked(now time.Time) {
+	if agent.Status == nil || agent.Status.Health == nil {
+		// The Agent does not report health at all. Reported health is sticky, so
+		// this really means "never reported", not "did not report this time".
+		// Such an Agent can only be reaped for going silent.
+		agent.unhealthySince = time.Time{}
+		return
+	}
+
+	if agent.Status.Health.Healthy {
+		agent.unhealthySince = time.Time{}
+		return
+	}
+
+	if agent.unhealthySince.IsZero() {
+		agent.unhealthySince = now
+	}
 }
 
 func (agent *Agent) processCustomMessage(statusMsg *protobufs.AgentToServer) {

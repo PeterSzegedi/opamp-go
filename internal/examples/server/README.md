@@ -83,6 +83,7 @@ config change and turns a rollback into a bucket operation.
 | `-s3-path-style` | `OPAMP_S3_PATH_STYLE` | `false` | Use `<endpoint>/<bucket>` addressing. Required by most S3 compatible stores. |
 | `-s3-kms-key-id` | `OPAMP_S3_KMS_KEY_ID` | _(bucket default)_ | KMS key to encrypt config files written by the Server with. |
 | `-s3-sync-interval` | `OPAMP_S3_SYNC_INTERVAL` | `30s` | How often the bucket is polled for changes made outside of the Server. |
+| `-reap-after` | `OPAMP_REAP_AFTER` | `24h` | How long an Agent may be unavailable or unhealthy before the Server forgets it and closes its connection. `0` disables reaping. |
 
 Credentials are taken from the default AWS credential chain (environment,
 shared config, IRSA/instance role, ...).
@@ -292,12 +293,68 @@ agent/bin/agent -component billing -stack dev \
   -endpoint wss://127.0.0.1:4320/v1/opamp -tls-insecure_skip_verify
 ```
 
+## Large, long running fleets
+
+Two things in the Server are sized for a fleet that is much bigger than the
+docker compose stack, and for a Server that stays up while the machines under it
+are replaced.
+
+### Reaping Agents that went away
+
+When a machine disappears without closing its OpAMP connection, which is the
+normal case for an abruptly terminated cloud instance or a severed network path,
+the Server does not find out: the WebSocket read loop only ends once the OS TCP
+stack gives up, which can take hours. Until then the Agent stays in the map,
+holds on to its config and its last reported status, and is still walked on every
+config change, where a write to its dead socket can stall the rollout for the
+Agents behind it.
+
+The reaper removes Agents that have been out of touch for longer than
+`-reap-after` (24h by default) and **closes their connection**, which is what
+actually releases the socket and the goroutine reading from it. An Agent is
+reaped when either:
+
+- it has not reported a status for longer than the threshold, counted from when
+  it connected if it never reported at all, or
+- it has been reporting itself **unhealthy** for longer than the threshold.
+
+An Agent that reports no health at all (no `ReportsHealth` capability, shown as
+`Unknown` in the UI) is never reaped for being unhealthy, only for going silent.
+
+Reaping is safe to do slightly too eagerly: an Agent that turns out to be alive
+simply registers again on its next message. Set `-reap-after 0` to disable it, in
+which case Agents are only forgotten when their connection closes.
+
+The scan interval is derived from the threshold (a twelfth of it, clamped to
+between 1 minute and 1 hour) so that `-reap-after` stays the only knob. Scanning
+is cheap: it walks the Agents without cloning them.
+
+### A paged agent list
+
+Rendering an Agent means cloning it, and a clone carries a deep copy of the
+Agent's last reported status including its effective config. Listing the whole
+fleet on one page therefore allocates in proportion to the fleet on every single
+page load, which does not survive tens of thousands of Agents.
+
+The agent list is paged instead, and only the Agents on the requested page are
+cloned:
+
+```
+http://localhost:4321/?page=2&pagesize=100
+```
+
+`pagesize` defaults to 50 and is capped at 500, so a hand written URL cannot ask
+for the whole fleet. Agents are ordered by instance id: an arbitrary order, but a
+stable one that can be established without taking any Agent's lock. A page beyond
+the end returns the last page, so a bookmarked URL keeps working as the fleet
+shrinks.
+
 ## Implementation
 
 | Package | Responsibility |
 | --- | --- |
 | `configstore` | Backend abstraction (`S3Backend`, `MemoryBackend`), the cached and periodically synced `Store`, and the key layout. |
-| `data` | Agent state. `Agents.SaveConfigForAgent` writes through the store, `Agents.ReloadConfigsFromStore` applies changes the store picked up. |
+| `data` | Agent state. `Agents.SaveConfigForAgent` writes through the store, `Agents.ReloadConfigsFromStore` applies changes the store picked up, and `Reaper` forgets Agents that went away. |
 | `opampsrv` | The OpAMP endpoint. |
 | `uisrv` | The admin UI. |
 

@@ -239,24 +239,6 @@ func (agents *Agents) GetAgentReadonlyClone(agentId InstanceId) *Agent {
 	return agent.CloneReadonly()
 }
 
-func (agents *Agents) GetAllAgentsReadonlyClone() map[InstanceId]*Agent {
-	agents.mux.RLock()
-
-	// Clone the map first
-	m := map[InstanceId]*Agent{}
-	for id, agent := range agents.agentsById {
-		m[id] = agent
-	}
-	agents.mux.RUnlock()
-
-	// Clone agents in the map
-	for id, agent := range m {
-		// Return a clone to allow safe access after returning.
-		m[id] = agent.CloneReadonly()
-	}
-	return m
-}
-
 func (a *Agents) OfferAgentConnectionSettings(
 	id InstanceId,
 	offers *protobufs.ConnectionSettingsOffers,

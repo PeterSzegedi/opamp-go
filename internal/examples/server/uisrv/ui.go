@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -66,7 +67,29 @@ func renderTemplate(w http.ResponseWriter, htmlTemplateFile string, data interfa
 }
 
 func renderRoot(w http.ResponseWriter, r *http.Request) {
-	renderTemplate(w, "root.html", data.AllAgents.GetAllAgentsReadonlyClone())
+	// The agent list is paged: rendering every Agent means cloning every Agent,
+	// which is not something a large fleet survives being asked for on every
+	// page load.
+	page := intParam(r, "page", 1)
+	pageSize := intParam(r, "pagesize", data.DefaultPageSize)
+
+	renderTemplate(w, "root.html", data.AllAgents.GetAgentsPage(page, pageSize))
+}
+
+// intParam reads a positive integer query parameter, falling back to
+// defaultValue when it is missing or cannot be used.
+func intParam(r *http.Request, name string, defaultValue int) int {
+	raw := r.URL.Query().Get(name)
+	if raw == "" {
+		return defaultValue
+	}
+
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		return defaultValue
+	}
+
+	return value
 }
 
 func renderAgent(w http.ResponseWriter, r *http.Request) {

@@ -93,7 +93,7 @@ func newTestStore(t *testing.T, backend configstore.Backend) *configstore.Store 
 // connectAgent registers an Agent and reports its first status, which is what
 // triggers the initial config lookup in the store. The component and stack
 // attributes are what the Agent's config is resolved by.
-func connectAgent(t *testing.T, agents *Agents, conn *recordingConnection, component, stack string) (*Agent, *protobufs.ServerToAgent) {
+func connectAgent(t *testing.T, agents *Agents, conn types.Connection, component, stack string) (*Agent, *protobufs.ServerToAgent) {
 	t.Helper()
 
 	instanceId := InstanceId(uuid.New())

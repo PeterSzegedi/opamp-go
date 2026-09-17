@@ -80,6 +80,9 @@ services:
       OPAMP_S3_ENDPOINT: ${OPAMP_S3_ENDPOINT-http://minio:9000}
       OPAMP_S3_PATH_STYLE: ${OPAMP_S3_PATH_STYLE:-true}
       OPAMP_S3_SYNC_INTERVAL: ${OPAMP_S3_SYNC_INTERVAL:-5s}
+      # How long an Agent may be unavailable or unhealthy before the Server
+      # forgets it and closes its connection. 0 disables reaping.
+      OPAMP_REAP_AFTER: ${OPAMP_REAP_AFTER:-24h}
       AWS_REGION: ${AWS_REGION:-us-east-1}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-minioadmin}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-minioadmin}

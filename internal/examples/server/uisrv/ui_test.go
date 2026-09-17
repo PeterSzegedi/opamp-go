@@ -5,6 +5,7 @@ import (
 	"context"
 	"html/template"
 	"net"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -122,4 +123,58 @@ func TestAgentPageRendersComponentAndStack(t *testing.T) {
 	assert.Contains(t, page, "billing")
 	assert.Contains(t, page, "Stack:")
 	assert.Contains(t, page, "prod")
+}
+
+func renderRootTemplate(t *testing.T, page *data.AgentsPage) string {
+	t.Helper()
+
+	tmpl, err := template.ParseFS(html.HtmlFS, "html/*")
+	require.NoError(t, err)
+
+	var out bytes.Buffer
+	require.NoError(t, tmpl.Lookup("root.html").Execute(&out, page))
+
+	return out.String()
+}
+
+// registerAgentsForRoot puts count Agents into the registry that the root page
+// lists.
+func registerAgentsForRoot(t *testing.T, count int) {
+	t.Helper()
+
+	agents := &data.AllAgents
+	conn := fakeConnection{id: 2}
+	t.Cleanup(func() { agents.RemoveConnection(conn) })
+
+	for range count {
+		agent := agents.FindOrCreateAgent(data.InstanceId(uuid.New()), conn)
+		agent.Status = &protobufs.AgentToServer{AgentDescription: &protobufs.AgentDescription{}}
+	}
+}
+
+// The root page must only render one page worth of agents, and must offer a way
+// to reach the rest.
+func TestRootPageIsPaged(t *testing.T) {
+	registerAgentsForRoot(t, 30)
+
+	page := data.AllAgents.GetAgentsPage(1, 10)
+	require.Len(t, page.Agents, 10)
+
+	rendered := renderRootTemplate(t, page)
+
+	assert.Contains(t, rendered, "of 30 agent(s)")
+	assert.Contains(t, rendered, "page 1 of 3")
+	assert.Contains(t, rendered, "?page=2&pagesize=10", "the next page must be reachable")
+	assert.Contains(t, rendered, "?page=3&pagesize=10", "the last page must be reachable")
+	assert.NotContains(t, rendered, "Previous", "there is nothing before the first page")
+
+	assert.Equal(t, 10, strings.Count(rendered, "agent?instanceid="),
+		"only the agents on the page may be rendered")
+}
+
+func TestRootPageWithoutAgents(t *testing.T) {
+	rendered := renderRootTemplate(t, data.AllAgents.GetAgentsPage(1, 10))
+
+	assert.Contains(t, rendered, "No agents are connected.")
+	assert.NotContains(t, rendered, "agent?instanceid=")
 }

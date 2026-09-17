@@ -37,6 +37,10 @@ func main() {
 	var noTLS bool
 	flag.BoolVar(&noTLS, "no-tls", false, "Serve the OpAMP endpoint without TLS, accepting plaintext (ws://) connections. Useful when testing OpAMP clients that do not support TLS yet.")
 
+	var reapAfter time.Duration
+	flag.DurationVar(&reapAfter, "reap-after", envDurationOr("OPAMP_REAP_AFTER", data.DefaultReapAfter),
+		"How long an Agent may be unavailable or unhealthy before the Server forgets it and closes its connection. Zero disables reaping.")
+
 	var s3 s3Flags
 	flag.StringVar(&s3.bucket, "s3-bucket", envOr("OPAMP_S3_BUCKET", ""),
 		"S3 bucket holding the agent config files. When empty, configs are kept in memory only and are lost on restart.")
@@ -75,6 +79,8 @@ func main() {
 	opampSrv := opampsrv.NewServer(&data.AllAgents, emitMetrics)
 	opampSrv.Start(noTLS)
 
+	reaper := startReaper(ctx, reapAfter)
+
 	logger.Println("OpAMP Server running...")
 
 	interrupt := make(chan os.Signal, 1)
@@ -84,9 +90,29 @@ func main() {
 	logger.Println("OpAMP Server shutting down...")
 	uisrv.Shutdown()
 	opampSrv.Stop()
+	reaper.Stop()
 	if configStore != nil {
 		configStore.Stop()
 	}
+}
+
+// startReaper starts the background process that forgets Agents which have been
+// unavailable or unhealthy for too long. Without it a Server that runs for a
+// long time in front of a fleet whose machines are replaced often accumulates
+// Agents whose connection died without ever being closed.
+func startReaper(ctx context.Context, reapAfter time.Duration) *data.Reaper {
+	reaper := data.NewReaper(&data.AllAgents, data.ReaperOptions{ReapAfter: reapAfter})
+	reaper.Start(ctx)
+
+	if !reaper.Enabled() {
+		logger.Println("Agent reaping is disabled (-reap-after), Agents are only forgotten when their connection closes.")
+		return reaper
+	}
+
+	logger.Printf("Forgetting Agents unavailable or unhealthy for more than %s (checked every %s)",
+		reaper.ReapAfter(), reaper.ScanInterval())
+
+	return reaper
 }
 
 // startConfigStore creates the config store, loads the configs it already holds
