@@ -103,7 +103,10 @@ be identifying or non-identifying:
 
 An Agent that reports neither gets the fallback `config.yaml`; one that reports
 only a component gets the component wide file. The example Agent sends both when
-started with `-component`/`-stack` (`AGENT_COMPONENT`/`AGENT_STACK`).
+started with `-component`/`-stack` (`AGENT_COMPONENT`/`AGENT_STACK`). The
+upstream OpenTelemetry Collector Supervisor sends them as
+`agent::description::identifying_attributes` in its config file; no fork of it is
+needed.
 
 ### IAM permissions
 
@@ -142,30 +145,63 @@ have:
 
 ### Trying it out
 
-The docker compose stack in `internal/examples` runs the Server, an Agent and a
-MinIO bucket wired together, which is enough to see the whole round trip:
+The docker compose stack in `internal/examples` runs the Server, a MinIO bucket
+and two kinds of Agent wired together, which is enough to see the whole round
+trip:
 
 ```shell
 make docker-compose-up      # from internal/examples
 make docker-compose-logs
 ```
 
-| Service | Address | Credentials |
+| Service | What it is |
+| --- | --- |
+| `opamp-server` | The Server and the admin UI, configured from the bucket. |
+| `minio` / `minio-init` | The bucket and its seed job. |
+| `default-config-example` | The example Agent, reporting no component and no stack, so it falls back to the root `config.yaml`. |
+| `nomad-server-example` | The stock upstream Supervisor running a real OpenTelemetry Collector, `component=nomad-server`, `stack=test-environment-pdx`. |
+
+The Supervisor box is not built from this repository: it is the released
+`opampsupervisor` binary from `opentelemetry-collector-releases` running
+`otel/opentelemetry-collector-contrib`, configured by
+[`opampsupervisor/supervisor.yaml`](../opampsupervisor/supervisor.yaml). Any
+OpAMP agent that reports `component` and `stack` works the same way.
+
+| Endpoint | Address | Credentials |
 | --- | --- | --- |
 | Admin UI | <http://localhost:4321> | |
 | MinIO console | <http://localhost:9001> | `minioadmin` / `minioadmin` |
 | MinIO API | <http://localhost:9000> | |
 
-The `minio-init` service creates the bucket and uploads
-[`server/configs/config.yaml`](configs/config.yaml) to
-`opamp-configs/otel-collector/config.yaml` on first start. The bucket lives in a
-named volume, so later edits survive `make docker-compose-down` and are not
-overwritten by the seed (`docker compose down -v` resets it).
+The `minio-init` service creates the bucket and uploads the files in
+[`server/configs`](configs), which mirror the layout of the bucket:
 
-The example Agent reports `component=example-collector` and `stack=dev` in the
-stack (`AGENT_COMPONENT`/`AGENT_STACK`), so it starts on the fallback config and
-its own config file would be
-`otel-collector/example-collector/dev/config.yaml`.
+```
+server/configs/config.yaml                                    -> opamp-configs/otel-collector/config.yaml
+server/configs/nomad-server/test-environment-pdx/config.yaml  -> opamp-configs/otel-collector/nomad-server/test-environment-pdx/config.yaml
+```
+
+Only files that are not in the bucket yet are uploaded, so adding a config file
+to `server/configs` seeds it on the next start while everything already in the
+bucket (including edits made in the UI) is left alone. The bucket lives in a
+named volume that survives `make docker-compose-down`; `docker compose down -v`
+resets it.
+
+That gives the two halves of the layout out of the box:
+
+- **`nomad-server-example`** reports `component=nomad-server` and
+  `stack=test-environment-pdx`, so it resolves to
+  `otel-collector/nomad-server/test-environment-pdx/config.yaml` and the
+  Collector it supervises runs that file. Its config is self-contained because a
+  real Collector runs it as is.
+- **`default-config-example`** reports neither attribute, so it falls back to
+  `otel-collector/config.yaml`. Set `AGENT_COMPONENT`/`AGENT_STACK` on it to give
+  it a file of its own; saving a config for it in the UI then creates
+  `otel-collector/<component>/<stack>/config.yaml`.
+
+Both boxes report a distinct `service.name`, which is the name the UI lists them
+under. The agent page of either one shows its component, its stack, the file it
+is configured from and the effective config it reports back.
 
 Two ways to watch the sync work, with `OPAMP_S3_SYNC_INTERVAL` set to 5s in the
 stack:
@@ -187,17 +223,21 @@ both paths are visible end to end.
 Uploading a narrower file takes precedence over the fallback:
 
 ```shell
-# Applies to every example agent in the dev stack.
+# Applies to the billing component in the dev stack only.
 aws --endpoint-url http://localhost:9000 s3 cp my-config.yaml \
-  s3://opamp-configs/otel-collector/example-collector/dev/config.yaml
+  s3://opamp-configs/otel-collector/billing/dev/config.yaml
 
-# Applies to the example agents in every stack.
+# Applies to the billing component in every stack.
 aws --endpoint-url http://localhost:9000 s3 cp my-config.yaml \
-  s3://opamp-configs/otel-collector/example-collector/config.yaml
+  s3://opamp-configs/otel-collector/billing/config.yaml
+
+# Reconfigures the Collector `nomad-server-example` runs, which restarts it.
+aws --endpoint-url http://localhost:9000 s3 cp my-collector-config.yaml \
+  s3://opamp-configs/otel-collector/nomad-server/test-environment-pdx/config.yaml
 ```
 
-Scale the Agents to see a config file fan out to every instance of the component
-in the stack:
+Scale the example Agents to see one config file fan out to every instance of the
+component in the stack:
 
 ```shell
 make docker-compose-scale AGENTS=3
@@ -223,7 +263,7 @@ AWS_SECRET_ACCESS_KEY=...
 Start it without the local bucket:
 
 ```shell
-docker compose up --build --no-deps opamp-server opamp-agent
+docker compose up --build --no-deps opamp-server default-config-example
 ```
 
 ### Running the Server against MinIO without docker compose
@@ -248,7 +288,7 @@ server/bin/server \
   -s3-sync-interval 5s
 
 # 4. Run an agent that asks for the config of a component in a stack.
-agent/bin/agent -component example-collector -stack dev \
+agent/bin/agent -component billing -stack dev \
   -endpoint wss://127.0.0.1:4320/v1/opamp -tls-insecure_skip_verify
 ```
 

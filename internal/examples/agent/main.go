@@ -274,7 +274,7 @@ func runScale(ctx context.Context, cfg flagConfig) ([]*agent.Agent, error) {
 		}
 
 		a := agent.NewAgent(agentConfig, opts...)
-		if startErr := a.Start(); err != nil {
+		if startErr := a.Start(); startErr != nil {
 			err = errors.Join(err, startErr)
 			continue
 		}

@@ -1,0 +1,43 @@
+# Configuration for the upstream OpenTelemetry Collector Supervisor
+# (github.com/open-telemetry/opentelemetry-collector-contrib/cmd/opampsupervisor).
+#
+# Nothing here is built from this repository: this is a stock Supervisor running a
+# stock Collector, pointed at the example OpAMP Server, so the docker compose
+# stack shows the server driving a real agent rather than only the example one.
+
+server:
+  endpoint: wss://opamp-server:4320/v1/opamp
+  tls:
+    # The example server serves its own self-signed certificate.
+    insecure_skip_verify: true
+
+capabilities:
+  accepts_remote_config: true
+  reports_effective_config: true
+  reports_health: true
+  # Keep the example self-contained: the Supervisor's own telemetry would need a
+  # backend to ship to.
+  reports_own_metrics: false
+
+agent:
+  executable: /usr/local/bin/otelcol-contrib
+  description:
+    identifying_attributes:
+      # service.name is the name the server's UI lists this agent under.
+      service.name: nomad-server-example
+      # component and stack are what the server resolves the config file by:
+      # <bucket>/<prefix>/<component>/<stack>/config.yaml, falling back to
+      # <bucket>/<prefix>/<component>/config.yaml and <bucket>/<prefix>/config.yaml.
+      component: nomad-server
+      stack: test-environment-pdx
+  config_files:
+    - $OWN_TELEMETRY_CONFIG
+    - $OPAMP_EXTENSION_CONFIG
+    - $REMOTE_CONFIG
+
+storage:
+  directory: /etc/otel/supervisor-data
+
+telemetry:
+  logs:
+    encoding: console

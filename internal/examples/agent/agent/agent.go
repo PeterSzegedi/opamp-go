@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/knadh/koanf"
@@ -63,6 +64,10 @@ type Agent struct {
 	agentType    string
 	agentVersion string
 	instanceId   uuid.UUID
+
+	// startedAt is when the Agent process came up. It is reported as the health
+	// start time, which is what the Server shows as the Agent's uptime.
+	startedAt time.Time
 
 	// component and stack tell the OpAMP Server which config applies to this
 	// Agent. They are reported as identifying attributes and are left out of the
@@ -167,6 +172,7 @@ func NewAgent(agentConfig *config.AgentConfig, options ...Option) *Agent {
 		agentVersion:    agentVersion,
 		agentConfig:     agentConfig,
 		effectiveConfig: localConfig,
+		startedAt:       time.Now(),
 	}
 
 	for _, option := range options {
@@ -252,6 +258,7 @@ func (agent *Agent) connect(ops ...settingsOp) error {
 		protobufs.AgentCapabilities_AgentCapabilities_ReportsRemoteConfig |
 		protobufs.AgentCapabilities_AgentCapabilities_ReportsEffectiveConfig |
 		protobufs.AgentCapabilities_AgentCapabilities_ReportsOwnMetrics |
+		protobufs.AgentCapabilities_AgentCapabilities_ReportsHealth |
 		protobufs.AgentCapabilities_AgentCapabilities_AcceptsOpAMPConnectionSettings |
 		protobufs.AgentCapabilities_AgentCapabilities_ReportsConnectionSettingsStatus
 	err = agent.client.SetCapabilities(&supportedCapabilities)
@@ -265,6 +272,18 @@ func (agent *Agent) connect(ops ...settingsOp) error {
 		},
 	}
 	err = agent.client.SetCustomCapabilities(customCapabilities)
+	if err != nil {
+		return err
+	}
+
+	// Health has to be set before Start, because declaring the ReportsHealth
+	// capability without any health to report is rejected. The Agent has nothing
+	// that can be unhealthy, so it reports healthy once and leaves it at that; a
+	// real Agent would report this again whenever its health changes.
+	err = agent.client.SetHealth(&protobufs.ComponentHealth{
+		Healthy:           true,
+		StartTimeUnixNano: uint64(agent.startedAt.UnixNano()),
+	})
 	if err != nil {
 		return err
 	}

@@ -77,4 +77,4 @@ docker-compose-scale:
 		echo "Error: AGENTS variable not set"; \
 		exit 1; \
 	fi
-	cd $(SRC_ROOT)/internal/examples && docker compose up --scale opamp-agent=$(AGENTS) -d
+	cd $(SRC_ROOT)/internal/examples && docker compose up --scale default-config-example=$(AGENTS) -d

@@ -28,9 +28,10 @@ services:
       - opamp-network
     restart: unless-stopped
 
-  # Creates the bucket and seeds the fallback config, unless they already exist.
-  # Configs stored in the volume survive a restart of the stack, so changes made
-  # through the UI are not overwritten by the seed.
+  # Creates the bucket and seeds it with the config files in server/configs,
+  # which mirror the layout of the bucket. Every file that is not in the bucket
+  # yet is uploaded; files that are already there are left alone, so changes made
+  # through the UI survive a restart of the stack.
   minio-init:
     image: quay.io/minio/mc:latest
     container_name: opamp-minio-init
@@ -50,11 +51,17 @@ services:
         set -e
         mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
         mc mb --ignore-existing "local/$$BUCKET"
-        if mc stat "local/$$BUCKET/$$PREFIX/config.yaml" >/dev/null 2>&1; then
-          echo "Config store already seeded, leaving local/$$BUCKET/$$PREFIX as it is."
-        else
-          mc cp /seed/config.yaml "local/$$BUCKET/$$PREFIX/config.yaml"
-        fi
+        # <prefix>/config.yaml, <prefix>/<component>/config.yaml and
+        # <prefix>/<component>/<stack>/config.yaml.
+        for file in /seed/*.yaml /seed/*/*.yaml /seed/*/*/*.yaml; do
+          [ -f "$$file" ] || continue
+          key=$${file#/seed/}
+          if mc stat "local/$$BUCKET/$$PREFIX/$$key" >/dev/null 2>&1; then
+            echo "Leaving local/$$BUCKET/$$PREFIX/$$key as it is."
+          else
+            mc cp "$$file" "local/$$BUCKET/$$PREFIX/$$key"
+          fi
+        done
     networks:
       - opamp-network
     restart: "no"
@@ -83,7 +90,12 @@ services:
       - opamp-network
     restart: unless-stopped
 
-  opamp-agent:
+  # The example Agent, reporting no component and no stack. It therefore falls all
+  # the way back to <bucket>/<prefix>/config.yaml, which is what makes it the
+  # "default config" box. Scale it with
+  # `docker compose up --scale default-config-example=<n>`, so it deliberately has
+  # no container_name.
+  default-config-example:
     build:
       context: ../..
       dockerfile: internal/examples/Dockerfile.agent
@@ -93,10 +105,11 @@ services:
       - "wss://opamp-server:4320/v1/opamp"
       - "--tls-insecure_skip_verify"
     environment:
-      # The component and the stack are what the server resolves the agent's
-      # config by: <bucket>/<prefix>/<component>/<stack>/config.yaml.
-      AGENT_COMPONENT: ${AGENT_COMPONENT:-example-collector}
-      AGENT_STACK: ${AGENT_STACK:-dev}
+      # The name the server's UI lists this agent under.
+      AGENT_TYPE: default-config-example
+      # AGENT_COMPONENT and AGENT_STACK are intentionally unset here. Set them to
+      # have this agent resolve to <bucket>/<prefix>/<component>/<stack>/config.yaml
+      # instead of the fallback config.
     networks:
       - opamp-network
     depends_on:
@@ -104,6 +117,22 @@ services:
     restart: unless-stopped
     deploy:
       replicas: 1
+
+  # The stock upstream Supervisor running a real OpenTelemetry Collector. It
+  # reports service.name=nomad-server-example, component=nomad-server and
+  # stack=test-environment-pdx, so the server configures it from
+  # <bucket>/<prefix>/nomad-server/test-environment-pdx/config.yaml and the
+  # Collector runs that file as its config. See opampsupervisor/supervisor.yaml.
+  nomad-server-example:
+    build:
+      context: ../..
+      dockerfile: internal/examples/Dockerfile.opampsupervisor
+    container_name: nomad-server-example
+    networks:
+      - opamp-network
+    depends_on:
+      - opamp-server
+    restart: unless-stopped
 
 networks:
   opamp-network:

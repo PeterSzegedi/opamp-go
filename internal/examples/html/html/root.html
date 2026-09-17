@@ -11,6 +11,8 @@
 <table width=100% border="1" style="border-collapse: collapse">
     <tr>
         <th>Name</th>
+        <th>Component</th>
+        <th>Stack</th>
         <th>Version</th>
         <th>Health</th>
         <th>Last seen</th>
@@ -19,6 +21,8 @@
 {{ range . }}
     <tr>
         <td>{{ .ServiceName }}</td>
+        <td>{{ .Component }}</td>
+        <td>{{ .Stack }}</td>
         <td>{{ .ServiceVersion }}</td>
         <td>{{ .HealthStatus }}</td>
         <td>{{ .LastSeen }}</td>
