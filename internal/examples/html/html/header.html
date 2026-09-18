@@ -1,4 +1,381 @@
-<html >
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>OpAMP Server</title>
+
+<script>
+  // Applied before the first paint so switching themes does not flash. Dark is
+  // the default: only an explicit choice that was stored earlier overrides it.
+  (function () {
+    try {
+      var saved = localStorage.getItem('opamp-theme');
+      if (saved === 'light' || saved === 'dark') {
+        document.documentElement.setAttribute('data-theme', saved);
+      }
+    } catch (e) {
+      // Storage unavailable (private mode, file://). Keep the default.
+    }
+  })();
+</script>
+
+<style>
+:root,
+[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #0d1117;
+    --bg-elevated: #161b22;
+    --bg-subtle: #1c2128;
+    --bg-hover: #21262d;
+    --border: #30363d;
+    --border-strong: #3d444d;
+    --text: #e6edf3;
+    --text-muted: #9198a1;
+    --accent: #4493f8;
+    --accent-hover: #58a6ff;
+    --accent-bg: #163055;
+    --success: #3fb950;
+    --success-bg: #12261e;
+    --danger: #f85149;
+    --danger-bg: #2d1214;
+    --warning: #d29922;
+    --warning-bg: #2b2412;
+    --shadow: 0 1px 3px rgba(1, 4, 9, 0.6);
+}
+
+[data-theme="light"] {
+    color-scheme: light;
+    --bg: #ffffff;
+    --bg-elevated: #ffffff;
+    --bg-subtle: #f6f8fa;
+    --bg-hover: #eef1f4;
+    --border: #d1d9e0;
+    --border-strong: #b7bfc8;
+    --text: #1f2328;
+    --text-muted: #59636e;
+    --accent: #0969da;
+    --accent-hover: #0550ae;
+    --accent-bg: #ddf4ff;
+    --success: #1a7f37;
+    --success-bg: #dafbe1;
+    --danger: #cf222e;
+    --danger-bg: #ffebe9;
+    --warning: #9a6700;
+    --warning-bg: #fff8c5;
+    --shadow: 0 1px 3px rgba(31, 35, 40, 0.12);
+}
+
+* { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans",
+          Helvetica, Arial, sans-serif;
+}
+
+code, pre, .mono {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+                 "Liberation Mono", monospace;
+    font-size: 12.5px;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { color: var(--accent-hover); text-decoration: underline; }
+
+h1, h2, h3, h4 { margin: 0; font-weight: 600; line-height: 1.25; }
+h2 { font-size: 20px; }
+h3 { font-size: 15px; }
+h4 { font-size: 13px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; }
+
+hr { border: 0; border-top: 1px solid var(--border); margin: 24px 0; }
+
+/* ---------- Layout ---------- */
+
+.topbar {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 0 24px;
+    height: 56px;
+    background: var(--bg-elevated);
+    border-bottom: 1px solid var(--border);
+}
+
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    color: var(--text);
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+}
+.brand:hover { color: var(--text); text-decoration: none; }
+.brand-mark {
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
+    background: var(--accent-bg);
+    color: var(--accent);
+    font-size: 12px;
+}
+
+.page {
+    max-width: 1240px;
+    margin: 0 auto;
+    padding: 24px;
+}
+
+.page-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+}
+
+/* Breadcrumb link sitting above a page title. */
+.page-head a { display: inline-block; font-size: 12.5px; margin-bottom: 4px; }
+.page-head h2 + .mono { font-size: 12.5px; }
+
+.grid-2 {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+    gap: 16px;
+}
+
+.stack { display: grid; gap: 16px; }
+
+/* ---------- Cards ---------- */
+
+.card {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+}
+
+.card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 16px;
+    background: var(--bg-subtle);
+    border-bottom: 1px solid var(--border);
+}
+
+.card-body { padding: 16px; }
+.card-body > :first-child { margin-top: 0; }
+
+/* ---------- Tables ---------- */
+
+table.data {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+table.data th {
+    padding: 9px 16px;
+    text-align: left;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    color: var(--text-muted);
+    background: var(--bg-subtle);
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+}
+
+table.data td {
+    padding: 9px 16px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+}
+
+table.data tbody tr:last-child td { border-bottom: 0; }
+table.data tbody tr:hover { background: var(--bg-hover); }
+
+/* Key/value table used for agent details and attributes. */
+table.kv { width: 100%; border-collapse: collapse; }
+table.kv td {
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+}
+table.kv tr:last-child td { border-bottom: 0; }
+table.kv td:first-child {
+    width: 40%;
+    color: var(--text-muted);
+    padding-right: 16px;
+    white-space: nowrap;
+}
+table.kv td:last-child { word-break: break-word; }
+
+/* ---------- Badges ---------- */
+
+.badge {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 999px;
+    border: 1px solid transparent;
+    font-size: 11.5px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+.badge-Up      { color: var(--success); background: var(--success-bg); border-color: var(--success); }
+.badge-Down    { color: var(--danger);  background: var(--danger-bg);  border-color: var(--danger); }
+.badge-Unknown { color: var(--text-muted); background: var(--bg-subtle); border-color: var(--border-strong); }
+
+.count-pill {
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: var(--bg-subtle);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.muted { color: var(--text-muted); }
+.danger { color: var(--danger); }
+
+/* ---------- Forms ---------- */
+
+input[type="text"], textarea, select {
+    width: 100%;
+    padding: 7px 10px;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 13px;
+}
+textarea {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+                 "Liberation Mono", monospace;
+    font-size: 12.5px;
+    resize: vertical;
+}
+input[type="text"]:focus, textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-bg);
+}
+
+label { display: inline-block; font-size: 12.5px; color: var(--text-muted); }
+
+.field { margin-bottom: 12px; }
+.field > label { margin-bottom: 4px; }
+
+.radio-row { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 12px; }
+.radio-row label { display: inline-flex; align-items: center; gap: 5px; color: var(--text); }
+input[type="radio"] { accent-color: var(--accent); margin: 0; }
+
+input[type="submit"], .btn {
+    display: inline-block;
+    padding: 7px 14px;
+    background: var(--bg-subtle);
+    color: var(--text);
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+}
+input[type="submit"]:hover, .btn:hover {
+    background: var(--bg-hover);
+    text-decoration: none;
+    color: var(--text);
+}
+input[type="submit"].primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #ffffff;
+}
+input[type="submit"].primary:hover { background: var(--accent-hover); }
+
+/* ---------- Code ---------- */
+
+pre {
+    margin: 0;
+    padding: 12px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: auto;
+    max-height: 460px;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+pre code { background: none; padding: 0; }
+
+code {
+    padding: 1px 5px;
+    background: var(--bg-subtle);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+}
+
+/* ---------- Pager ---------- */
+
+.pager {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 12px 16px;
+    border-top: 1px solid var(--border);
+    background: var(--bg-subtle);
+}
+.pager .spacer { flex: 1; }
+
+/* ---------- Theme toggle ---------- */
+
+.theme-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 12px;
+    background: var(--bg-subtle);
+    color: var(--text-muted);
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    font: inherit;
+    font-size: 12.5px;
+    cursor: pointer;
+}
+.theme-toggle:hover { background: var(--bg-hover); color: var(--text); }
+
+.empty {
+    padding: 40px 16px;
+    text-align: center;
+    color: var(--text-muted);
+}
+</style>
+</head>
 <body>
-<h1>OpAMP Server</h1>
+
+<header class="topbar">
+    <a class="brand" href="/">
+        <span class="brand-mark">&#9671;</span>
+        OpAMP Server
+    </a>
+    <button id="theme-toggle" class="theme-toggle" type="button">Light</button>
+</header>
+
+<main class="page">
