@@ -42,6 +42,16 @@
                 <tr>
                     <td>Instance ID:</td><td>{{ .InstanceIdStr }}</td>
                 </tr>
+                {{if .Component }}
+                <tr>
+                    <td>Component:</td><td>{{ .Component }}</td>
+                </tr>
+                {{end}}
+                {{if .Stack }}
+                <tr>
+                    <td>Stack:</td><td>{{ .Stack }}</td>
+                </tr>
+                {{end}}
                 {{if .Status.Health }}
                 <tr>
                     <td>Up:</td><td>{{ .Status.Health.Healthy }}</td>
@@ -90,6 +100,28 @@
             <pre><code class="language-yaml">{{ .EffectiveConfig }}</code></pre>
         </td>
         <td valign="top">
+            {{if .ConfigStoreLocation }}
+            Configuration in {{ .ConfigStoreLocation }}:<br/>
+            <form action="/save_config" method="post">
+            <input type="hidden" name="instanceid" value="{{ .InstanceIdStr }}"/>
+            <label for="configkey">File:</label>
+            <input type="text" id="configkey" name="configkey" size="60" value="{{ .ConfigKey }}"/><br/>
+            <textarea rows="20" name="config">{{ .CustomInstanceConfig }}</textarea><br/>
+            <small>
+                Saving writes this file to the config store, which is the source of truth.
+                The file applies to every agent that resolves to it: all instances of
+                <code>&lt;component&gt;/&lt;stack&gt;/config.yaml</code>, all stacks of
+                <code>&lt;component&gt;/config.yaml</code>, and every other agent for
+                <code>config.yaml</code>.
+            </small><br/>
+             {{if .Status.RemoteConfigStatus }}
+                {{if .Status.RemoteConfigStatus.ErrorMessage }}
+                <span style="color:red">Failed: {{ .Status.RemoteConfigStatus.ErrorMessage }}</span><br/>
+                {{end}}
+             {{end}}
+            <input type="submit" value="Save to Config Store and Send to Agent"/>
+            </form>
+            {{else}}
             Additional Configuration:<br/>
             <form action="/save_config" method="post">
             <input type="hidden" name="instanceid" value="{{ .InstanceIdStr }}"/>
@@ -101,6 +133,7 @@
              {{end}}
             <input type="submit" value="Save and Send to Agent"/>
             </form>
+            {{end}}
         </td>
     </tr>
 </table>

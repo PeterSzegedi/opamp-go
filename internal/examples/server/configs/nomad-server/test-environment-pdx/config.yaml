@@ -1,0 +1,47 @@
+# Config of the `nomad-server` component in the `test-environment-pdx` stack,
+# uploaded to
+# s3://opamp-configs/otel-collector/nomad-server/test-environment-pdx/config.yaml
+# by the docker compose stack.
+#
+# The Supervisor in the stack reports component=nomad-server and
+# stack=test-environment-pdx, so this file wins over the fallback config at the
+# root of the prefix and is what its Collector actually runs. It is a complete
+# Collector config: the Supervisor only adds the health check extension and the
+# telemetry settings it needs to supervise the Collector.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch: {}
+  resource/stack:
+    attributes:
+      - key: component
+        value: nomad-server
+        action: upsert
+      - key: stack
+        value: test-environment-pdx
+        action: upsert
+
+exporters:
+  debug:
+    verbosity: normal
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch, resource/stack]
+      exporters: [debug]
+    metrics:
+      receivers: [otlp]
+      processors: [batch, resource/stack]
+      exporters: [debug]
+    logs:
+      receivers: [otlp]
+      processors: [batch, resource/stack]
+      exporters: [debug]

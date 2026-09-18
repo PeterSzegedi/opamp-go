@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/knadh/koanf"
@@ -63,6 +64,16 @@ type Agent struct {
 	agentType    string
 	agentVersion string
 	instanceId   uuid.UUID
+
+	// startedAt is when the Agent process came up. It is reported as the health
+	// start time, which is what the Server shows as the Agent's uptime.
+	startedAt time.Time
+
+	// component and stack tell the OpAMP Server which config applies to this
+	// Agent. They are reported as identifying attributes and are left out of the
+	// Agent description when empty.
+	component string
+	stack     string
 
 	agentConfig *config.AgentConfig
 
@@ -131,6 +142,22 @@ func WithInstanceID(id uuid.UUID) Option {
 	}
 }
 
+// WithComponent is used to set the component the Agent belongs to, which the
+// Server resolves the Agent's config by.
+func WithComponent(s string) Option {
+	return func(agent *Agent) {
+		agent.component = s
+	}
+}
+
+// WithStack is used to set the stack the Agent runs in, which the Server
+// resolves the Agent's config by.
+func WithStack(s string) Option {
+	return func(agent *Agent) {
+		agent.stack = s
+	}
+}
+
 // WithNoClientCertRequest will ensure the agent does not request a client cert when initially connecting.
 func WithNoClientCertRequest() Option {
 	return func(agent *Agent) {
@@ -145,6 +172,7 @@ func NewAgent(agentConfig *config.AgentConfig, options ...Option) *Agent {
 		agentVersion:    agentVersion,
 		agentConfig:     agentConfig,
 		effectiveConfig: localConfig,
+		startedAt:       time.Now(),
 	}
 
 	for _, option := range options {
@@ -230,6 +258,7 @@ func (agent *Agent) connect(ops ...settingsOp) error {
 		protobufs.AgentCapabilities_AgentCapabilities_ReportsRemoteConfig |
 		protobufs.AgentCapabilities_AgentCapabilities_ReportsEffectiveConfig |
 		protobufs.AgentCapabilities_AgentCapabilities_ReportsOwnMetrics |
+		protobufs.AgentCapabilities_AgentCapabilities_ReportsHealth |
 		protobufs.AgentCapabilities_AgentCapabilities_AcceptsOpAMPConnectionSettings |
 		protobufs.AgentCapabilities_AgentCapabilities_ReportsConnectionSettingsStatus
 	err = agent.client.SetCapabilities(&supportedCapabilities)
@@ -243,6 +272,18 @@ func (agent *Agent) connect(ops ...settingsOp) error {
 		},
 	}
 	err = agent.client.SetCustomCapabilities(customCapabilities)
+	if err != nil {
+		return err
+	}
+
+	// Health has to be set before Start, because declaring the ReportsHealth
+	// capability without any health to report is rejected. The Agent has nothing
+	// that can be unhealthy, so it reports healthy once and leaves it at that; a
+	// real Agent would report this again whenever its health changes.
+	err = agent.client.SetHealth(&protobufs.ComponentHealth{
+		Healthy:           true,
+		StartTimeUnixNano: uint64(agent.startedAt.UnixNano()),
+	})
 	if err != nil {
 		return err
 	}
@@ -319,6 +360,28 @@ func (agent *Agent) createAgentIdentity() {
 				},
 			},
 		},
+	}
+
+	// The component and the stack are what the Server looks up the Agent's config
+	// by, so they identify the Agent just like its type and version do.
+	if agent.component != "" {
+		agent.agentDescription.IdentifyingAttributes = append(
+			agent.agentDescription.IdentifyingAttributes,
+			stringAttribute("component", agent.component),
+		)
+	}
+	if agent.stack != "" {
+		agent.agentDescription.IdentifyingAttributes = append(
+			agent.agentDescription.IdentifyingAttributes,
+			stringAttribute("stack", agent.stack),
+		)
+	}
+}
+
+func stringAttribute(key, value string) *protobufs.KeyValue {
+	return &protobufs.KeyValue{
+		Key:   key,
+		Value: &protobufs.AnyValue{Value: &protobufs.AnyValue_StringValue{StringValue: value}},
 	}
 }
 

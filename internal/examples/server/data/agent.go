@@ -21,6 +21,13 @@ import (
 
 const (
 	CustomMessageHistorySize = 15
+
+	// ComponentAttribute is the Agent attribute naming the component the Agent
+	// belongs to, such as the service or collector it runs for.
+	ComponentAttribute = "component"
+	// StackAttribute is the Agent attribute naming the stack (environment,
+	// deployment, ...) the Agent runs in.
+	StackAttribute = "stack"
 )
 
 // Agent represents a connected Agent.
@@ -46,12 +53,28 @@ type Agent struct {
 	// The time when the agent last reported status.
 	LastSeenAt time.Time
 
+	// connectedAt is when the Agent was first registered. It gives the reaper a
+	// starting point for an Agent that connected but never reported a status, so
+	// that it is not treated as infinitely stale.
+	connectedAt time.Time
+
+	// unhealthySince is when the Agent started reporting itself unhealthy. It is
+	// zero while the Agent is healthy, and also while it reports no health at
+	// all: an Agent that does not have the ReportsHealth capability must not be
+	// reaped for being "unhealthy".
+	unhealthySince time.Time
+
 	// Effective config reported by the Agent.
 	EffectiveConfig string
 
 	// Optional special remote config for this particular instance defined by
 	// the user in the UI.
 	CustomInstanceConfig string
+
+	// Key in the config store that CustomInstanceConfig was loaded from, and that
+	// changes made in the UI are written back to. Empty when no config store is
+	// configured.
+	ConfigKey string
 
 	// Client certificate
 	ClientCert                  *x509.Certificate
@@ -64,6 +87,10 @@ type Agent struct {
 	// Remote config that we will give to this Agent.
 	remoteConfig *protobufs.AgentRemoteConfig
 
+	// Source of truth for this Agent's config. May be nil, in which case the
+	// config is only kept in memory.
+	configStore ConfigStore
+
 	// Channels to notify when this Agent's status is updated next time.
 	statusUpdateWatchers []chan<- struct{}
 }
@@ -72,7 +99,12 @@ func NewAgent(
 	instanceId InstanceId,
 	conn types.Connection,
 ) *Agent {
-	agent := &Agent{InstanceId: instanceId, InstanceIdStr: uuid.UUID(instanceId).String(), conn: conn}
+	agent := &Agent{
+		InstanceId:    instanceId,
+		InstanceIdStr: uuid.UUID(instanceId).String(),
+		conn:          conn,
+		connectedAt:   time.Now().UTC(),
+	}
 	tslConn, ok := conn.Connection().(*tls.Conn)
 	if ok {
 		// Client is using TLS connection.
@@ -95,6 +127,18 @@ func (agent *Agent) ServiceName() string {
 
 func (agent *Agent) ServiceVersion() string {
 	return valueOrPlaceholder(agent.displayAttribute("service.version"))
+}
+
+// Component is the component this Agent belongs to, as reported by the Agent.
+// Together with Stack it decides which config file in the store applies to the
+// Agent. It is empty when the Agent does not report the attribute.
+func (agent *Agent) Component() string {
+	return agent.displayAttribute(ComponentAttribute)
+}
+
+// Stack is the stack this Agent runs in, as reported by the Agent. See Component.
+func (agent *Agent) Stack() string {
+	return agent.displayAttribute(StackAttribute)
 }
 
 func (agent *Agent) HealthStatus() string {
@@ -200,9 +244,13 @@ func (agent *Agent) CloneReadonly() *Agent {
 		Status:                      cloneProto[protobufs.AgentToServer](agent.Status),
 		EffectiveConfig:             agent.EffectiveConfig,
 		CustomInstanceConfig:        agent.CustomInstanceConfig,
+		ConfigKey:                   agent.ConfigKey,
+		configStore:                 agent.configStore,
 		remoteConfig:                cloneProto[protobufs.AgentRemoteConfig](agent.remoteConfig),
 		StartedAt:                   agent.StartedAt,
 		LastSeenAt:                  agent.LastSeenAt,
+		connectedAt:                 agent.connectedAt,
+		unhealthySince:              agent.unhealthySince,
 		ClientCert:                  agent.ClientCert,
 		ClientCertOfferError:        agent.ClientCertOfferError,
 		ClientCertSha256Fingerprint: agent.ClientCertSha256Fingerprint,
@@ -221,6 +269,7 @@ func (agent *Agent) UpdateStatus(
 	agent.LastSeenAt = time.Now().UTC()
 
 	agent.processStatusUpdate(statusMsg, response)
+	agent.trackHealthLocked(agent.LastSeenAt)
 
 	if statusMsg.ConnectionSettingsRequest != nil {
 		agent.processConnectionSettingsRequest(statusMsg.ConnectionSettingsRequest.Opamp, response)
@@ -237,6 +286,30 @@ func (agent *Agent) UpdateStatus(
 
 	// Notify watcher outside mutex to avoid blocking the mutex for too long.
 	notifyStatusWatchers(statusUpdateWatchers)
+}
+
+// trackHealthLocked remembers since when the Agent has been reporting itself
+// unhealthy, which is what the reaper ages out. An Agent that reports no health
+// at all (it does not have the ReportsHealth capability) is deliberately not
+// counted as unhealthy: such an Agent can only be reaped for going silent.
+// The caller must hold agent.mux.
+func (agent *Agent) trackHealthLocked(now time.Time) {
+	if agent.Status == nil || agent.Status.Health == nil {
+		// The Agent does not report health at all. Reported health is sticky, so
+		// this really means "never reported", not "did not report this time".
+		// Such an Agent can only be reaped for going silent.
+		agent.unhealthySince = time.Time{}
+		return
+	}
+
+	if agent.Status.Health.Healthy {
+		agent.unhealthySince = time.Time{}
+		return
+	}
+
+	if agent.unhealthySince.IsZero() {
+		agent.unhealthySince = now
+	}
 }
 
 func (agent *Agent) processCustomMessage(statusMsg *protobufs.AgentToServer) {
@@ -407,6 +480,12 @@ func (agent *Agent) processStatusUpdate(
 	if agentDescrChanged {
 		// Only need to check if config has changed if the agent is able to accept a new config
 		if agent.hasCapability(protobufs.AgentCapabilities_AgentCapabilities_AcceptsRemoteConfig) {
+			// The Agent just told us who it is, which may resolve to a different
+			// config in the store (e.g. its service.name changed, or this is the
+			// first status report after a reconnect), so re-read the config from
+			// the source of truth before recalculating.
+			agent.loadConfigFromStore()
+
 			// We need to recalculate the config.
 			configChanged = agent.calcRemoteConfig()
 			if agent.Status.RemoteConfigStatus != nil {
@@ -446,6 +525,79 @@ func (agent *Agent) SetCustomConfig(
 
 	agent.CustomInstanceConfig = string(config.ConfigMap[""].Body)
 
+	agent.sendConfigIfChanged(notifyWhenConfigIsApplied)
+}
+
+// RefreshConfigFromStore re-reads this Agent's config from the config store and
+// sends it to the Agent if it differs from what the Agent was last offered. It
+// is a no-op when no config store is configured.
+//
+// notifyWhenConfigIsApplied follows the same contract as in SetCustomConfig.
+func (agent *Agent) RefreshConfigFromStore(notifyWhenConfigIsApplied chan<- struct{}) {
+	agent.mux.Lock()
+
+	agent.loadConfigFromStore()
+
+	agent.sendConfigIfChanged(notifyWhenConfigIsApplied)
+}
+
+// loadConfigFromStore refreshes the Agent's config from the config store, which
+// is the source of truth for it. The caller must hold agent.mux.
+func (agent *Agent) loadConfigFromStore() {
+	if agent.configStore == nil {
+		// No external store, the config is kept in memory only.
+		return
+	}
+
+	component, stack := agent.Component(), agent.Stack()
+
+	key, body, found := agent.configStore.Resolve(component, stack)
+	if !found {
+		// The store holds no config for this Agent. Keep the config the Agent
+		// currently has: handing out an empty config would wipe the Agent's
+		// configuration, so a config file that is missing (not created yet, or
+		// deleted by mistake) must not cascade into an outage.
+		//
+		// Still remember where a config for this Agent would belong, so that the
+		// UI can offer to create it.
+		agent.ConfigKey = agent.configStore.DefaultKeyFor(component, stack)
+		return
+	}
+
+	agent.ConfigKey = key
+	agent.CustomInstanceConfig = string(body)
+}
+
+// ConfigStoreLocation describes where this Agent's config is stored, for display
+// purposes. It is empty when no config store is configured.
+func (agent *Agent) ConfigStoreLocation() string {
+	if agent.configStore == nil {
+		return ""
+	}
+
+	return agent.configStore.Location()
+}
+
+// storeConfigKey returns the key this Agent's config is stored under, falling
+// back to the key a config for it would be created at.
+func (agent *Agent) storeConfigKey() string {
+	agent.mux.RLock()
+	defer agent.mux.RUnlock()
+
+	if agent.ConfigKey != "" {
+		return agent.ConfigKey
+	}
+	if agent.configStore == nil {
+		return ""
+	}
+
+	return agent.configStore.DefaultKeyFor(agent.Component(), agent.Stack())
+}
+
+// sendConfigIfChanged recalculates the remote config of the Agent and sends it
+// to the Agent if it changed. The caller must hold agent.mux, which this method
+// releases.
+func (agent *Agent) sendConfigIfChanged(notifyWhenConfigIsApplied chan<- struct{}) {
 	configChanged := agent.calcRemoteConfig()
 	if configChanged {
 		if notifyWhenConfigIsApplied != nil {

@@ -1,0 +1,32 @@
+# Fallback config, handed to every Agent that has no config file of its own in
+# the bucket. Uploaded to s3://opamp-configs/otel-collector/config.yaml by the
+# docker compose stack, and from there on owned by the bucket: edit it in the
+# admin UI, with `mc`/`aws s3 cp`, or from a pipeline.
+#
+# A config for one component in one stack goes to
+# s3://opamp-configs/otel-collector/<component>/<stack>/config.yaml and wins over
+# this file.
+#
+# The config is self-contained, so it can be run by a Collector as it is. The
+# example Agent merges what it receives on top of its own local config.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch: {}
+
+exporters:
+  debug:
+    verbosity: normal
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]

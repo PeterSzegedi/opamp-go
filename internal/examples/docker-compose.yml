@@ -1,4 +1,71 @@
 services:
+  # S3 compatible store holding the agent config files. The OpAMP Server treats
+  # it as the source of truth: configs saved in the admin UI are written here,
+  # and configs written here by anything else are synced out to the agents.
+  #
+  # Point the stack at a real S3 bucket by overriding the OPAMP_S3_* and AWS_*
+  # variables below, for example in internal/examples/.env.
+  minio:
+    # quay.io rather than Docker Hub: MinIO publishes to both, and quay.io is
+    # not subject to Docker Hub's anonymous pull rate limits.
+    image: quay.io/minio/minio:latest
+    container_name: opamp-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${AWS_ACCESS_KEY_ID:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - opamp-network
+    restart: unless-stopped
+
+  # Creates the bucket and seeds it with the config files in server/configs,
+  # which mirror the layout of the bucket. Every file that is not in the bucket
+  # yet is uploaded; files that are already there are left alone, so changes made
+  # through the UI survive a restart of the stack.
+  minio-init:
+    image: quay.io/minio/mc:latest
+    container_name: opamp-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${AWS_ACCESS_KEY_ID:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
+      BUCKET: ${OPAMP_S3_BUCKET:-opamp-configs}
+      PREFIX: ${OPAMP_S3_PREFIX:-otel-collector}
+    volumes:
+      - ./server/configs:/seed:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        mc mb --ignore-existing "local/$$BUCKET"
+        # <prefix>/config.yaml, <prefix>/<component>/config.yaml and
+        # <prefix>/<component>/<stack>/config.yaml.
+        for file in /seed/*.yaml /seed/*/*.yaml /seed/*/*/*.yaml; do
+          [ -f "$$file" ] || continue
+          key=$${file#/seed/}
+          if mc stat "local/$$BUCKET/$$PREFIX/$$key" >/dev/null 2>&1; then
+            echo "Leaving local/$$BUCKET/$$PREFIX/$$key as it is."
+          else
+            mc cp "$$file" "local/$$BUCKET/$$PREFIX/$$key"
+          fi
+        done
+    networks:
+      - opamp-network
+    restart: "no"
+
   opamp-server:
     build:
       context: ../..
@@ -7,11 +74,31 @@ services:
     ports:
       - "4320:4320"
       - "4321:4321"
+    environment:
+      OPAMP_S3_BUCKET: ${OPAMP_S3_BUCKET:-opamp-configs}
+      OPAMP_S3_PREFIX: ${OPAMP_S3_PREFIX:-otel-collector}
+      OPAMP_S3_ENDPOINT: ${OPAMP_S3_ENDPOINT-http://minio:9000}
+      OPAMP_S3_PATH_STYLE: ${OPAMP_S3_PATH_STYLE:-true}
+      OPAMP_S3_SYNC_INTERVAL: ${OPAMP_S3_SYNC_INTERVAL:-5s}
+      # How long an Agent may be unavailable or unhealthy before the Server
+      # forgets it and closes its connection. 0 disables reaping.
+      OPAMP_REAP_AFTER: ${OPAMP_REAP_AFTER:-24h}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
     networks:
       - opamp-network
     restart: unless-stopped
 
-  opamp-agent:
+  # The example Agent, reporting no component and no stack. It therefore falls all
+  # the way back to <bucket>/<prefix>/config.yaml, which is what makes it the
+  # "default config" box. Scale it with
+  # `docker compose up --scale default-config-example=<n>`, so it deliberately has
+  # no container_name.
+  default-config-example:
     build:
       context: ../..
       dockerfile: internal/examples/Dockerfile.agent
@@ -20,6 +107,12 @@ services:
       - "--endpoint"
       - "wss://opamp-server:4320/v1/opamp"
       - "--tls-insecure_skip_verify"
+    environment:
+      # The name the server's UI lists this agent under.
+      AGENT_TYPE: default-config-example
+      # AGENT_COMPONENT and AGENT_STACK are intentionally unset here. Set them to
+      # have this agent resolve to <bucket>/<prefix>/<component>/<stack>/config.yaml
+      # instead of the fallback config.
     networks:
       - opamp-network
     depends_on:
@@ -28,6 +121,25 @@ services:
     deploy:
       replicas: 1
 
+  # The stock upstream Supervisor running a real OpenTelemetry Collector. It
+  # reports service.name=nomad-server-example, component=nomad-server and
+  # stack=test-environment-pdx, so the server configures it from
+  # <bucket>/<prefix>/nomad-server/test-environment-pdx/config.yaml and the
+  # Collector runs that file as its config. See opampsupervisor/supervisor.yaml.
+  nomad-server-example:
+    build:
+      context: ../..
+      dockerfile: internal/examples/Dockerfile.opampsupervisor
+    container_name: nomad-server-example
+    networks:
+      - opamp-network
+    depends_on:
+      - opamp-server
+    restart: unless-stopped
+
 networks:
   opamp-network:
     driver: bridge
+
+volumes:
+  minio-data:

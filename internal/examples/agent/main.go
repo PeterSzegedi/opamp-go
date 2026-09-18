@@ -31,6 +31,8 @@ type flagConfig struct {
 	// Agent config options
 	agentType             string
 	agentVersion          string
+	component             string
+	stack                 string
 	tlsInsecure           bool
 	tlsInsecureSkipVerify bool
 	tlsCertFile           string
@@ -107,6 +109,14 @@ func loadEnv(cfg *flagConfig) {
 		cfg.agentVersion = s
 	}
 
+	if s, ok := os.LookupEnv("AGENT_COMPONENT"); ok {
+		cfg.component = s
+	}
+
+	if s, ok := os.LookupEnv("AGENT_STACK"); ok {
+		cfg.stack = s
+	}
+
 	if s, ok := os.LookupEnv("AGENT_TLS_INSECURE"); ok {
 		b, err := strconv.ParseBool(s)
 		if err == nil {
@@ -163,6 +173,8 @@ func main() {
 	var cfg flagConfig
 	flag.StringVar(&cfg.agentType, "t", "io.opentelemetry.collector", "Agent Type String (env var: AGENT_TYPE).")
 	flag.StringVar(&cfg.agentVersion, "v", "1.0.0", "Agent Version String (env var: AGENT_VERSION).")
+	flag.StringVar(&cfg.component, "component", "", "Component the agent belongs to. The server resolves the agent's config by it (env var: AGENT_COMPONENT).")
+	flag.StringVar(&cfg.stack, "stack", "", "Stack the agent runs in. The server resolves the agent's config by it (env var: AGENT_STACK).")
 	flag.BoolVar(&cfg.tlsInsecure, "tls-insecure", false, "Disable the client transport security (env var: AGENT_TLS_INSECURE).")
 	flag.BoolVar(&cfg.tlsInsecureSkipVerify, "tls-insecure_skip_verify", false, "Will enable TLS but not verify the certificate (env var: AGENT_TLS_INSECURE_SKIP_VERIFY).")
 	flag.StringVar(&cfg.tlsCertFile, "tls-cert_file", "", "Path to the TLS cert (env var: AGENT_TLS_CERT_FILE).")
@@ -238,6 +250,8 @@ func runScale(ctx context.Context, cfg flagConfig) ([]*agent.Agent, error) {
 		opts := []agent.Option{
 			agent.WithAgentType(cfg.agentType),
 			agent.WithAgentVersion(cfg.agentVersion),
+			agent.WithComponent(cfg.component),
+			agent.WithStack(cfg.stack),
 		}
 		if cfg.quietAgent {
 			opts = append(opts, agent.WithLogger(nopLogger))
@@ -260,7 +274,7 @@ func runScale(ctx context.Context, cfg flagConfig) ([]*agent.Agent, error) {
 		}
 
 		a := agent.NewAgent(agentConfig, opts...)
-		if startErr := a.Start(); err != nil {
+		if startErr := a.Start(); startErr != nil {
 			err = errors.Join(err, startErr)
 			continue
 		}

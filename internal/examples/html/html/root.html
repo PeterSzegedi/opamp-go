@@ -6,19 +6,42 @@
     td {
         padding: 5px
     }
+    .paging {
+        margin: 8px 0;
+    }
+    .paging a {
+        margin-right: 8px;
+    }
+    .paging .summary {
+        color: #555;
+    }
 </style>
+
+{{ if eq .TotalAgents 0 }}
+<p>No agents are connected.</p>
+{{ else }}
+<div class="paging">
+    <span class="summary">
+        Showing {{ .FirstIndex }}&ndash;{{ .LastIndex }} of {{ .TotalAgents }} agent(s)
+        &mdash; page {{ .Page }} of {{ .TotalPages }}
+    </span>
+</div>
 
 <table width=100% border="1" style="border-collapse: collapse">
     <tr>
         <th>Name</th>
+        <th>Component</th>
+        <th>Stack</th>
         <th>Version</th>
         <th>Health</th>
         <th>Last seen</th>
         <th>Instance ID</th>
     </tr>
-{{ range . }}
+{{ range .Agents }}
     <tr>
         <td>{{ .ServiceName }}</td>
+        <td>{{ .Component }}</td>
+        <td>{{ .Stack }}</td>
         <td>{{ .ServiceVersion }}</td>
         <td>{{ .HealthStatus }}</td>
         <td>{{ .LastSeen }}</td>
@@ -26,6 +49,18 @@
     </tr>
 {{ end }}
 </table>
+
+<div class="paging">
+    {{ if .HasPrev }}
+    <a href="/?page=1&pagesize={{ .PageSize }}">&laquo; First</a>
+    <a href="/?page={{ .PrevPage }}&pagesize={{ .PageSize }}">&lsaquo; Previous</a>
+    {{ end }}
+    {{ if .HasNext }}
+    <a href="/?page={{ .NextPage }}&pagesize={{ .PageSize }}">Next &rsaquo;</a>
+    <a href="/?page={{ .TotalPages }}&pagesize={{ .PageSize }}">Last &raquo;</a>
+    {{ end }}
+</div>
+{{ end }}
 
 </body>
 </html>

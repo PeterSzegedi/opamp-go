@@ -1,0 +1,23 @@
+# The stock upstream Supervisor driving a stock OpenTelemetry Collector Contrib.
+# Neither binary is built from this repository - the point of this image is to
+# show the example OpAMP Server configuring a real agent it did not ship.
+ARG OPAMPSUPERVISOR_IMAGE=ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-opampsupervisor:latest
+ARG OTELCOL_IMAGE=otel/opentelemetry-collector-contrib:latest
+
+FROM ${OPAMPSUPERVISOR_IMAGE} AS supervisor
+FROM ${OTELCOL_IMAGE} AS collector
+
+# Both upstream images are distroless and ship only their own binary. The
+# Supervisor needs the Collector next to it, plus a writable directory for its
+# state and for the effective config it starts the Collector with, so copy the two
+# binaries onto a plain base image rather than layering onto either one.
+FROM debian:bookworm-slim
+
+COPY --from=supervisor /usr/local/bin/opampsupervisor /usr/local/bin/opampsupervisor
+COPY --from=collector /otelcol-contrib /usr/local/bin/otelcol-contrib
+COPY internal/examples/opampsupervisor/supervisor.yaml /etc/otel/supervisor.yaml
+
+RUN mkdir -p /etc/otel/supervisor-data
+
+ENTRYPOINT ["/usr/local/bin/opampsupervisor"]
+CMD ["--config", "/etc/otel/supervisor.yaml"]
