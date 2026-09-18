@@ -1,235 +1,252 @@
 {{ template "header.html" . }}
 
-<a href="/">Back to Agents List</a>
-
-<style>
-    td {
-        padding: 5px
-    }
-    .config-table {
-        table-layout: fixed;
-        width: 100%;
-    }
-    .config-table > tbody > tr > td {
-        width: 50%;
-    }
-    .config-table pre {
-        white-space: pre-wrap;
-        word-break: break-word;
-        overflow: auto;
-        max-height: 500px;
-        border: 1px solid #ccc;
-        padding: 5px;
-    }
-    .config-table textarea {
-        width: 100%;
-        box-sizing: border-box;
-    }
-</style>
-
-<link rel="stylesheet"
-      href="//cdnjs.cloudflare.com/ajax/libs/highlight.js/11.1.0/styles/default.min.css">
+<link id="hljs-dark" rel="stylesheet"
+      href="//cdnjs.cloudflare.com/ajax/libs/highlight.js/11.1.0/styles/github-dark.min.css">
+<link id="hljs-light" rel="stylesheet"
+      href="//cdnjs.cloudflare.com/ajax/libs/highlight.js/11.1.0/styles/github.min.css" disabled>
 <script src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/11.1.0/highlight.min.js"></script>
 <script>hljs.highlightAll();</script>
 
-<hr/>
+<div class="page-head">
+    <div>
+        <a href="/">&lsaquo; Back to agents list</a>
+        <h2>{{ .ServiceName }}</h2>
+        <span class="muted mono">{{ .InstanceIdStr }}</span>
+    </div>
+    <span class="badge badge-{{ .HealthStatus }}">{{ .HealthStatus }}</span>
+</div>
 
-<table>
-    <tr>
-        <td valign="top">
-            <h3>Agent</h3>
-            <table border="1" style="border-collapse: collapse">
+<div class="stack">
+
+<div class="grid-2">
+    <div class="card">
+        <div class="card-head"><h3>Agent</h3></div>
+        <div class="card-body">
+            <table class="kv">
                 <tr>
-                    <td>Instance ID:</td><td>{{ .InstanceIdStr }}</td>
+                    <td>Instance ID</td><td class="mono">{{ .InstanceIdStr }}</td>
+                </tr>
+                <tr>
+                    <td>Version</td><td>{{ .ServiceVersion }}</td>
                 </tr>
                 {{if .Component }}
                 <tr>
-                    <td>Component:</td><td>{{ .Component }}</td>
+                    <td>Component</td><td>{{ .Component }}</td>
                 </tr>
                 {{end}}
                 {{if .Stack }}
                 <tr>
-                    <td>Stack:</td><td>{{ .Stack }}</td>
+                    <td>Stack</td><td>{{ .Stack }}</td>
                 </tr>
                 {{end}}
+                <tr>
+                    <td>Last seen</td><td>{{ .LastSeen }}</td>
+                </tr>
                 {{if .Status.Health }}
                 <tr>
-                    <td>Up:</td><td>{{ .Status.Health.Healthy }}</td>
+                    <td>Up</td><td>{{ .Status.Health.Healthy }}</td>
                 </tr>
                 {{if .Status.Health.LastError }}
                 <tr>
-                    <td></td><td><span style="color:red">{{ .Status.Health.LastError }}</span></td>
+                    <td>Last error</td><td class="danger">{{ .Status.Health.LastError }}</td>
                 </tr>
                 {{end}}
                 {{if .Status.Health.Healthy }}
                 <tr>
-                    <td>Up since:</td><td>{{ .StartedAt }}</td>
+                    <td>Up since</td><td>{{ .StartedAt }}</td>
                 </tr>
                 <tr>
-                    <td>Uptime:</td><td>{{ .Uptime }}</td>
+                    <td>Uptime</td><td>{{ .Uptime }}</td>
                 </tr>
                 {{end}}
                 {{end}}
             </table>
-        </td>
-        <td valign="top">
-            <h3>Attributes</h3>
-            <table border="1" style="border-collapse: collapse">
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-head"><h3>Attributes</h3></div>
+        <div class="card-body">
+            <table class="kv">
                 {{ range .Status.AgentDescription.IdentifyingAttributes }}
-                </tr>
-                <td>{{ .Key }}</td><td>{{ .Value }}</td>
+                <tr>
+                    <td>{{ .Key }}</td><td class="mono">{{ .Value }}</td>
                 </tr>
                 {{ end }}
                 {{ range .Status.AgentDescription.NonIdentifyingAttributes }}
-                </tr>
-                <td>{{ .Key }}</td><td>{{ .Value }}</td>
+                <tr>
+                    <td>{{ .Key }}</td><td class="mono">{{ .Value }}</td>
                 </tr>
                 {{ end }}
             </table>
-        </td>
-    </tr>
-</table>
+        </div>
+    </div>
+</div>
 
-<hr/>
-
-<h3>Configuration</h3>
-<table class="config-table">
-    <tr>
-        <td valign="top">
-            Current Effective Configuration:<br/>
+<div class="grid-2">
+    <div class="card">
+        <div class="card-head"><h3>Current Effective Configuration</h3></div>
+        <div class="card-body">
             <pre><code class="language-yaml">{{ .EffectiveConfig }}</code></pre>
-        </td>
-        <td valign="top">
-            {{if .ConfigStoreLocation }}
-            Configuration in {{ .ConfigStoreLocation }}:<br/>
+        </div>
+    </div>
+
+    <div class="card">
+        {{if .ConfigStoreLocation }}
+        <div class="card-head">
+            <h3>Configuration in {{ .ConfigStoreLocation }}</h3>
+        </div>
+        <div class="card-body">
             <form action="/save_config" method="post">
-            <input type="hidden" name="instanceid" value="{{ .InstanceIdStr }}"/>
-            <label for="configkey">File:</label>
-            <input type="text" id="configkey" name="configkey" size="60" value="{{ .ConfigKey }}"/><br/>
-            <textarea rows="20" name="config">{{ .CustomInstanceConfig }}</textarea><br/>
-            <small>
-                Saving writes this file to the config store, which is the source of truth.
-                The file applies to every agent that resolves to it: all instances of
-                <code>&lt;component&gt;/&lt;stack&gt;/config.yaml</code>, all stacks of
-                <code>&lt;component&gt;/config.yaml</code>, and every other agent for
-                <code>config.yaml</code>.
-            </small><br/>
-             {{if .Status.RemoteConfigStatus }}
-                {{if .Status.RemoteConfigStatus.ErrorMessage }}
-                <span style="color:red">Failed: {{ .Status.RemoteConfigStatus.ErrorMessage }}</span><br/>
+                <input type="hidden" name="instanceid" value="{{ .InstanceIdStr }}"/>
+                <div class="field">
+                    <label for="configkey">File</label>
+                    <input type="text" id="configkey" name="configkey" value="{{ .ConfigKey }}"/>
+                </div>
+                <div class="field">
+                    <textarea rows="18" name="config">{{ .CustomInstanceConfig }}</textarea>
+                </div>
+                <p class="muted">
+                    Saving writes this file to the config store, which is the source of truth.
+                    The file applies to every agent that resolves to it: all instances of
+                    <code>&lt;component&gt;/&lt;stack&gt;/config.yaml</code>, all stacks of
+                    <code>&lt;component&gt;/config.yaml</code>, and every other agent for
+                    <code>config.yaml</code>.
+                </p>
+                {{if .Status.RemoteConfigStatus }}
+                    {{if .Status.RemoteConfigStatus.ErrorMessage }}
+                    <p class="danger">Failed: {{ .Status.RemoteConfigStatus.ErrorMessage }}</p>
+                    {{end}}
                 {{end}}
-             {{end}}
-            <input type="submit" value="Save to Config Store and Send to Agent"/>
+                <input class="primary" type="submit" value="Save to Config Store and Send to Agent"/>
             </form>
-            {{else}}
-            Additional Configuration:<br/>
+        </div>
+        {{else}}
+        <div class="card-head">
+            <h3>Additional Configuration</h3>
+        </div>
+        <div class="card-body">
             <form action="/save_config" method="post">
-            <input type="hidden" name="instanceid" value="{{ .InstanceIdStr }}"/>
-            <textarea rows="20" name="config">{{ .CustomInstanceConfig }}</textarea><br/>
-             {{if .Status.RemoteConfigStatus }}
-                {{if .Status.RemoteConfigStatus.ErrorMessage }}
-                <span style="color:red">Failed: {{ .Status.RemoteConfigStatus.ErrorMessage }}</span><br/>
+                <input type="hidden" name="instanceid" value="{{ .InstanceIdStr }}"/>
+                <div class="field">
+                    <textarea rows="18" name="config">{{ .CustomInstanceConfig }}</textarea>
+                </div>
+                <p class="muted">
+                    No config store is configured, so this config is only kept in the
+                    server's memory and is lost when the server restarts.
+                </p>
+                {{if .Status.RemoteConfigStatus }}
+                    {{if .Status.RemoteConfigStatus.ErrorMessage }}
+                    <p class="danger">Failed: {{ .Status.RemoteConfigStatus.ErrorMessage }}</p>
+                    {{end}}
                 {{end}}
-             {{end}}
-            <input type="submit" value="Save and Send to Agent"/>
+                <input class="primary" type="submit" value="Save and Send to Agent"/>
             </form>
+        </div>
+        {{end}}
+    </div>
+</div>
+
+<div class="grid-2">
+    <div class="card">
+        <div class="card-head"><h3>Client Certificate</h3></div>
+        <div class="card-body">
+            <table class="kv">
+                {{if .ClientCert}}
+                <tr>
+                    <td>Subject</td><td>{{ .ClientCert.Subject }}</td>
+                </tr>
+                <tr>
+                    <td>Not Valid Before</td><td>{{ .ClientCert.NotBefore }}</td>
+                </tr>
+                <tr>
+                    <td>Not Valid After</td><td>{{ .ClientCert.NotAfter }}</td>
+                </tr>
+                <tr>
+                    <td>SHA256 Fingerprint</td><td class="mono">{{ .ClientCertSha256Fingerprint }}</td>
+                </tr>
+                {{else}}
+                <tr>
+                    <td colspan="2" class="danger">Client did not supply a certificate.</td>
+                </tr>
+                {{end}}
+            </table>
+
+            {{if .ClientCertOfferError }}
+            <p class="danger">Cannot apply offered certificate: {{ .ClientCertOfferError }}</p>
             {{end}}
-        </td>
-    </tr>
-</table>
 
-<hr/>
+            <form action="/rotate_client_cert" method="post">
+                <input type="hidden" name="instanceid" value="{{ .InstanceIdStr }}"/>
+                {{if .ClientCert}}
+                <input type="submit" value="Rotate Client Certificate"/>
+                {{else}}
+                <input type="submit" value="Accept and Offer Client Certificate"/>
+                {{end}}
+            </form>
+        </div>
+    </div>
 
-<h3>Client Certificate</h3>
+    <div class="card">
+        <div class="card-head"><h3>OpAMP Connection Settings</h3></div>
+        <div class="card-body">
+            <form action="/opamp_connection_settings" method="post">
+                <input type="hidden" name="instanceid" value="{{ .InstanceIdStr }}"/>
 
-<table border="1" style="border-collapse: collapse">
-    {{if .ClientCert}}
-    <tr>
-        <td>Subject:</td><td>{{ .ClientCert.Subject }}</td>
-    </tr>
-    <tr>
-        <td>Not Valid Before:</td><td>{{ .ClientCert.NotBefore }}</td>
-    </tr>
-    <tr>
-        <td>Not Valid After:</td><td>{{ .ClientCert.NotAfter }}</td>
-    </tr>
-    <tr>
-        <td>SHA256 Fingerprint:</td><td>{{ .ClientCertSha256Fingerprint }}</td>
-    </tr>
-    {{else}}
-    <tr>
-        <td><span style="color:red">Client did not supply a certificate.</span></td>
-    </tr>
-    {{end}}
-</table>
+                <label>Minimum TLS version</label>
+                <div class="radio-row">
+                    <label><input type="radio" name="tls_min" value="TLSv1.0"> TLSv1.0</label>
+                    <label><input type="radio" name="tls_min" value="TLSv1.1"> TLSv1.1</label>
+                    <label><input type="radio" name="tls_min" value="TLSv1.2"> TLSv1.2</label>
+                    <label><input type="radio" name="tls_min" value="TLSv1.3"> TLSv1.3</label>
+                </div>
 
-{{if .ClientCertOfferError }}
-<br/>
-<span style="color:red">Cannot apply offered certificate: {{ .ClientCertOfferError }}</span>
-<br/>
-{{end}}
+                <div class="field">
+                    <label for="proxy_url">Proxy URL</label>
+                    <input type="text" id="proxy_url" name="proxy_url">
+                </div>
 
-<br/>
-<form action="/rotate_client_cert" method="post">
-    <input type="hidden" name="instanceid" value="{{ .InstanceIdStr }}"/>
-    {{if .ClientCert}}
-    <input type="submit" value="Rotate Client Certificate"/>
-    {{else}}
-    <input type="submit" value="Accept and Offer Client Certificate"/>
-    {{end}}
-</form>
+                <input type="submit" value="Set connection settings"/>
+            </form>
+        </div>
+    </div>
+</div>
 
-<h3>OpAMP Connection Settings</h3>
+<div class="card">
+    <div class="card-head"><h3>Custom Messages</h3></div>
+    <div class="card-body">
+        <form action="/send_custom_message" method="post">
+            <input type="hidden" name="instanceid" value="{{ .InstanceIdStr }}"/>
 
-<br/>
+            <div class="grid-2">
+                <div class="field">
+                    <label for="capability">Capability</label>
+                    <input type="text" id="capability" name="capability" value="io.opentelemetry.custom.health"/>
+                </div>
+                <div class="field">
+                    <label for="type">Type</label>
+                    <input type="text" id="type" name="type" value="get_health"/>
+                </div>
+                <div class="field">
+                    <label for="data">Data</label>
+                    <input type="text" id="data" name="data" value=""/>
+                </div>
+            </div>
 
-<form action="/opamp_connection_settings" method="post">
-    <input type="hidden" name="instanceid" value="{{ .InstanceIdStr }}"/>
-    <input type="radio" name="tls_min" value="TLSv1.0">
-      <label for="TLSv1.0">TLSv1.0</label><br/>
-    <input type="radio" name="tls_min" value="TLSv1.1">
-      <label for="TLSv1.1">TLSv1.1</label><br/>
-    <input type="radio" name="tls_min" value="TLSv1.2">
-      <label for="TLSv1.2">TLSv1.2</label><br/>
-    <input type="radio" name="tls_min" value="TLSv1.3">
-      <label for="TLSv1.3">TLSv1.3</label><br/>
+            <input type="submit" value="Send Custom Message"/>
+        </form>
 
-    <label for="proxy_url">Proxy URL:</label>
-      <input type="text" id="proxy_url" name="proxy_url"><br/>
+        <h4 style="margin-top:20px">Received Messages</h4>
+        {{ if eq (len .CustomMessageHistory) 0 }}
+        <p class="muted">No received messages.</p>
+        {{ else }}
+        <p class="muted">Last {{ len .CustomMessageHistory }} received messages</p>
+        <pre><code>{{ range .CustomMessageHistory }}{{ . }}
+{{ end }}</code></pre>
+        {{ end }}
+    </div>
+</div>
 
-    <input type="submit" value="Set connection settings"/>
-</form>
+</div>
 
-</body>
-</html>
-
-<hr/>
-
-<h3>Custom Messages</h3>
-
-<h4>Send Custom Message</h4>
-<form action="/send_custom_message" method="post">
-    <input type="hidden" name="instanceid" value="{{ .InstanceIdStr }}"/>
-    
-    <label for="capability">Capability:</label>
-        <input type="text" name="capability" value="io.opentelemetry.custom.health" size="30"/><br/>
-
-    <label for="type">Type:</label>
-        <input type="text" name="type" value="get_health" size="30"/><br/>
-
-    <label for="data">Data:</label>
-        <input type="text" name="data" value="" size="30"/><br/>
-
-    <input type="submit" value="Send Custom Message" />
-</form>
-
-<h4>Received Messages</h4>
-
-{{ if eq (len .CustomMessageHistory) 0 }}
-No Received Messages
-{{ else }}
-Last {{ len .CustomMessageHistory }} Received Messages
-<pre class="log-container"><code>{{ range .CustomMessageHistory }}{{ . }}
-{{ end }}
-</code></pre>
-{{ end }} 
+{{ template "footer.html" . }}

@@ -119,10 +119,8 @@ func TestAgentPageRendersComponentAndStack(t *testing.T) {
 
 	page := renderAgentTemplate(t, agent)
 
-	assert.Contains(t, page, "Component:")
-	assert.Contains(t, page, "billing")
-	assert.Contains(t, page, "Stack:")
-	assert.Contains(t, page, "prod")
+	assert.Contains(t, page, "<td>Component</td><td>billing</td>")
+	assert.Contains(t, page, "<td>Stack</td><td>prod</td>")
 }
 
 func renderRootTemplate(t *testing.T, page *data.AgentsPage) string {

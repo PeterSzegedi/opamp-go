@@ -1,66 +1,68 @@
 {{ template "header.html" . }}
 
-<h2>Agents</h2>
-
-<style>
-    td {
-        padding: 5px
-    }
-    .paging {
-        margin: 8px 0;
-    }
-    .paging a {
-        margin-right: 8px;
-    }
-    .paging .summary {
-        color: #555;
-    }
-</style>
-
-{{ if eq .TotalAgents 0 }}
-<p>No agents are connected.</p>
-{{ else }}
-<div class="paging">
-    <span class="summary">
+<div class="page-head">
+    <h2>Agents</h2>
+    {{ if ne .TotalAgents 0 }}
+    <span class="muted">
         Showing {{ .FirstIndex }}&ndash;{{ .LastIndex }} of {{ .TotalAgents }} agent(s)
         &mdash; page {{ .Page }} of {{ .TotalPages }}
     </span>
-</div>
-
-<table width=100% border="1" style="border-collapse: collapse">
-    <tr>
-        <th>Name</th>
-        <th>Component</th>
-        <th>Stack</th>
-        <th>Version</th>
-        <th>Health</th>
-        <th>Last seen</th>
-        <th>Instance ID</th>
-    </tr>
-{{ range .Agents }}
-    <tr>
-        <td>{{ .ServiceName }}</td>
-        <td>{{ .Component }}</td>
-        <td>{{ .Stack }}</td>
-        <td>{{ .ServiceVersion }}</td>
-        <td>{{ .HealthStatus }}</td>
-        <td>{{ .LastSeen }}</td>
-        <td><a href="agent?instanceid={{ .InstanceIdStr }}">{{ .InstanceIdStr }}</a></td>
-    </tr>
-{{ end }}
-</table>
-
-<div class="paging">
-    {{ if .HasPrev }}
-    <a href="/?page=1&pagesize={{ .PageSize }}">&laquo; First</a>
-    <a href="/?page={{ .PrevPage }}&pagesize={{ .PageSize }}">&lsaquo; Previous</a>
-    {{ end }}
-    {{ if .HasNext }}
-    <a href="/?page={{ .NextPage }}&pagesize={{ .PageSize }}">Next &rsaquo;</a>
-    <a href="/?page={{ .TotalPages }}&pagesize={{ .PageSize }}">Last &raquo;</a>
     {{ end }}
 </div>
-{{ end }}
 
-</body>
-</html>
+<div class="card">
+    {{ if eq .TotalAgents 0 }}
+    <div class="empty">
+        <p>No agents are connected.</p>
+        <p class="muted">Agents show up here as soon as they open an OpAMP connection.</p>
+    </div>
+    {{ else }}
+    <div class="card-head">
+        <h3>Connected agents</h3>
+        <span class="count-pill">{{ .TotalAgents }}</span>
+    </div>
+
+    <table class="data">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Component</th>
+                <th>Stack</th>
+                <th>Version</th>
+                <th>Health</th>
+                <th>Last seen</th>
+                <th>Instance ID</th>
+            </tr>
+        </thead>
+        <tbody>
+        {{ range .Agents }}
+            <tr>
+                <td>{{ .ServiceName }}</td>
+                <td>{{ if .Component }}{{ .Component }}{{ else }}<span class="muted">&mdash;</span>{{ end }}</td>
+                <td>{{ if .Stack }}{{ .Stack }}{{ else }}<span class="muted">&mdash;</span>{{ end }}</td>
+                <td>{{ .ServiceVersion }}</td>
+                <td><span class="badge badge-{{ .HealthStatus }}">{{ .HealthStatus }}</span></td>
+                <td class="muted">{{ .LastSeen }}</td>
+                <td><a class="mono" href="agent?instanceid={{ .InstanceIdStr }}">{{ .InstanceIdStr }}</a></td>
+            </tr>
+        {{ end }}
+        </tbody>
+    </table>
+
+    <div class="pager">
+        {{ if .HasPrev }}
+        <a class="btn" href="/?page=1&pagesize={{ .PageSize }}">&laquo; First</a>
+        <a class="btn" href="/?page={{ .PrevPage }}&pagesize={{ .PageSize }}">&lsaquo; Prev</a>
+        {{ end }}
+        <span class="spacer"></span>
+        <span class="muted">Page {{ .Page }} of {{ .TotalPages }}</span>
+        <span class="spacer"></span>
+        {{ if .HasNext }}
+        <a class="btn" href="/?page={{ .NextPage }}&pagesize={{ .PageSize }}">Next &rsaquo;</a>
+        <a class="btn" href="/?page={{ .TotalPages }}&pagesize={{ .PageSize }}">Last &raquo;</a>
+        {{ end }}
+    </div>
+    {{ end }}
+</div>
+
+{{ template "footer.html" . }}

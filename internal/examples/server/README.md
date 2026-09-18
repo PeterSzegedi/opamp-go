@@ -349,6 +349,20 @@ stable one that can be established without taking any Agent's lock. A page beyon
 the end returns the last page, so a bookmarked URL keeps working as the fleet
 shrinks.
 
+## Admin UI
+
+The UI is server rendered from three templates in
+[`internal/examples/html/html`](../html/html): `header.html` (the whole
+stylesheet and the top bar), `root.html` (the paged agent list) and `agent.html`
+(one Agent). `footer.html` closes the page and carries the theme script. There is
+no build step and no asset pipeline; the templates are embedded in the binary.
+
+The theme is dark by default. The toggle in the top bar switches to light and
+remembers the choice in `localStorage`, which a small inline script in the header
+re-applies before the first paint so the page does not flash. Colors come from
+CSS custom properties defined once per theme, so a new element only needs to use
+`var(--...)` to work in both.
+
 ## Implementation
 
 | Package | Responsibility |
