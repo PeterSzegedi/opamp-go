@@ -1,0 +1,50 @@
+</main>
+
+<script>
+  // Theme switching. Dark is the default; an explicit choice is remembered in
+  // localStorage and re-applied by the inline script in the header before the
+  // first paint.
+  (function () {
+    var root = document.documentElement;
+    var button = document.getElementById('theme-toggle');
+
+    function render() {
+      var dark = root.getAttribute('data-theme') !== 'light';
+
+      if (button) {
+        // The button says what clicking it will do, not what is active.
+        button.textContent = dark ? 'Light' : 'Dark';
+        button.setAttribute('aria-label', dark ? 'Switch to light theme' : 'Switch to dark theme');
+      }
+
+      // The agent page loads both highlight.js themes and keeps the one that
+      // does not match disabled. They are absent on pages without code.
+      var hljsDark = document.getElementById('hljs-dark');
+      var hljsLight = document.getElementById('hljs-light');
+      if (hljsDark) {
+        hljsDark.disabled = !dark;
+      }
+      if (hljsLight) {
+        hljsLight.disabled = dark;
+      }
+    }
+
+    if (button) {
+      button.addEventListener('click', function () {
+        var next = root.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+        root.setAttribute('data-theme', next);
+        try {
+          localStorage.setItem('opamp-theme', next);
+        } catch (e) {
+          // Storage unavailable. The choice simply does not survive the page.
+        }
+        render();
+      });
+    }
+
+    render();
+  })();
+</script>
+
+</body>
+</html>
